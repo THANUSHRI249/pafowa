@@ -1,0 +1,244 @@
+# PAFOWA · Parvathi Apartments Foundation Committee Association
+
+A lightweight, mobile-first maintenance management app for an apartment association.
+Residents verify a one-time SMS code, pay monthly maintenance and download receipts.
+The treasurer records and confirms payments, tracks expenses, manages apartments and
+publishes notices. The president and secretary have read-only oversight and share
+security alarms with the treasurer.
+
+Built with **React 19 + Vite**, **Tailwind CSS v4**, **Lucide icons**,
+**Supabase** (PostgreSQL, Auth, Storage, TOTP MFA) and **jsPDF**.
+
+---
+
+## What is included
+
+**Resident**
+- SMS one-time code at every new browser session
+- Dashboard with apartment, current month status, amount due, last payment and notices
+- Submit a payment (Cash or Bank / UPI) with duplicate protection
+- Payment history with month / status / method filters
+- Download PDF receipts
+- Profile with name and phone
+
+**Committee (treasurer, president, secretary)**
+- Password + authenticator-app code (TOTP) at every new session
+- Treasurer: full access to collections, expenses, apartments, notices and security
+- President and secretary: read-only oversight of the same records
+- Security page: new-device alarms, known devices, officer activity, instant lockdown
+- Dashboard: total collection, cash, bank, pending, collection rate, expenses
+
+**Apartment structure is configurable** — blocks, unit numbers, amounts and combined
+units (e.g. `A2 + T2`) are all managed from the Apartments page. Nothing is hardcoded.
+
+The app ships with **no sample data**. A new installation starts empty and the treasurer
+adds the real blocks, apartments and amounts.
+
+---
+
+## Security model
+
+- **Residents** sign in with a phone number and a 6-digit SMS code. The code is required
+  again for every new browser session. Residents can only read and write records for the
+  apartment linked to their account.
+- **Officers** sign in with email + password and then a 6-digit authenticator-app code.
+  RLS helper functions require the session to be at **AAL2**, so a password-only session
+  cannot read data through the API either.
+- **New-device alarm.** Every officer sign-in from a device the association has not seen
+  raises a warning alert for all three officers. The alert appears as a red banner and on
+  the Security page until a committee member acknowledges it.
+- **Instant lockdown.** Any officer can lock an account from the Security page. Locking
+  raises a critical alert, blocks every RLS helper, and shows the locked user a dedicated
+  screen. Only the treasurer can unlock.
+- **Row Level Security** on every table. No DELETE grants exist on financial tables.
+  Confirmed payments are immutable; expenses are voided with a reason and stay visible.
+- **Receipt numbers** (`PAFOWA-YYYY-NNNN`) are issued inside a database function, not in
+  the browser.
+- **Private Storage** for vouchers and archived receipts. Only the treasurer can read or
+  upload them.
+- **No service-role key in the frontend.** Only the anon public key is used; every
+  privileged operation is enforced inside the database.
+
+`supabase/schema.sql` is the source of truth for all of this. Review it before applying.
+
+---
+
+## Local setup
+
+### 1. Create a Supabase project
+
+Create a free project at [supabase.com](https://supabase.com), then copy the **Project
+URL** and the **anon public** key from *Project Settings → API*.
+
+```bash
+npm install
+cp .env.example .env.local
+```
+
+```env
+VITE_SUPABASE_URL=https://YOUR-PROJECT.supabase.co
+VITE_SUPABASE_ANON_KEY=YOUR-ANON-PUBLIC-KEY
+```
+
+### 2. Create the database
+
+Open the Supabase **SQL Editor** and run `supabase/schema.sql` once. It creates the
+tables, indexes, triggers, Row Level Security policies, security RPCs and the private
+`vouchers` / `receipts` Storage buckets.
+
+There is deliberately **no seed file**. The database starts empty.
+
+### 3. Configure authentication
+
+In *Authentication → Providers*:
+
+- **Email** — enable it for committee officers. Disable *Confirm email* while onboarding
+  a small association, or ask officers to confirm before their first sign-in.
+- **Phone** — enable phone sign-ups so residents can verify an SMS code. Supabase needs an
+  SMS provider for real numbers (Twilio, MessageBird, Vonage, etc.). Provider messages are
+  not covered by the free Supabase plan.
+  - For a free trial, add up to 10 **test phone numbers** under *Authentication → Phone →
+    Test OTP* and give each resident a fixed code. Test numbers do not send real SMS.
+  - For a live association, connect a provider and add credit with that provider.
+
+### 4. Create the first treasurer
+
+1. In *Authentication → Users → Add user*, create the treasurer's email + password.
+   The database trigger creates a matching row in `public.profiles` with role `resident`.
+2. Promote it once in the SQL Editor:
+
+```sql
+update public.profiles
+set role = 'treasurer'
+where email = 'treasurer@example.com';
+```
+
+3. Sign in at `/login` on the **Committee** tab. The app shows a QR code and setup key.
+   Scan it with Google Authenticator, Microsoft Authenticator or Authy, then enter the
+   6-digit code. The first authenticator enrolment must be done on a trusted device by the
+   officer themselves.
+
+Create the president and secretary the same way, with roles `president` and `secretary`.
+
+### 5. Onboard residents
+
+Residents sign in on the **Resident** tab with the phone number registered with the
+association. Supabase creates their auth user and profile automatically. The treasurer
+then opens **Apartments → Edit** and links that account to its apartment. A resident only
+sees their own unit and payments.
+
+### 6. Run
+
+```bash
+npm run dev       # local development
+npm run build     # production bundle in dist/
+npm run preview   # preview the built app
+```
+
+---
+
+## Deploy for free
+
+The repository includes `netlify.toml` with the SPA rewrite rule, so any static host that
+supports redirects can serve the app. Netlify's free tier works well:
+
+1. Push this repository to GitHub.
+2. In Netlify, choose **Add new site → Import an existing project** and select the repo.
+3. Build command: `npm run build`; publish directory: `dist`.
+4. Add environment variables under **Site configuration → Environment variables**:
+   - `VITE_SUPABASE_URL`
+   - `VITE_SUPABASE_ANON_KEY`
+5. Deploy. After changing environment variables, trigger a new deploy so Vite bakes them
+   into the bundle.
+
+Alternatively, deploy from the CLI:
+
+```bash
+npx netlify-cli login
+npx netlify-cli init
+npx netlify-cli deploy --prod --dir=dist
+```
+
+The anon key is safe to ship in the browser; RLS enforces access. Never add the
+service-role key to Netlify or to this repository.
+
+> **Free-hosting caveat:** hosting is free, but real SMS delivery is not. For a live
+> association you need an SMS provider. Supabase test OTP numbers are the free way to
+> trial the resident login.
+
+---
+
+## Project structure
+
+```
+src/
+  components/
+    auth/            MFA gate, locked-account screen
+    layout/          app shell, role-based bottom navigation
+    security/        in-app alarm banner
+    ui/              Button, Card, Input, Badge, Modal, StatCard, EmptyState...
+    PaymentFields.jsx, PaymentDetailModal.jsx, AnnouncementCard.jsx
+  context/           AuthContext, ToastContext
+  hooks/             useAsyncData, useSecurityOverview
+  lib/
+    config.js        app name, roles, expense/occupancy categories
+    data.js          the Supabase repository
+    supabaseRepo.js  Supabase adapter (queries + RPCs + Storage + Auth)
+    billing.js       billing units, combined units, summaries, status precedence
+    security.js      session gates, device fingerprint, security event bus
+    pdf.js           receipt PDF (jsPDF, Indian amount in words)
+    utils.js         money, dates, month keys, formatting
+  pages/
+    Login.jsx
+    resident/        Home, Maintenance
+    shared/          History, Notices, Profile
+    admin/           Dashboard, Collections, Expenses, Apartments, Security, More
+supabase/
+  schema.sql         tables, RLS, triggers, RPCs, storage policies
+```
+
+Once configured, all screens talk to a single Supabase repository. Dashboards, totals and
+statuses are derived from the loaded records (`billing.js`) — there are no hardcoded
+figures.
+
+### Billing units
+
+A billing unit is either one apartment or one active combined unit. Combined members are
+removed from the individual list so maintenance can never be charged twice. Payment status
+precedence is **confirmed → pending → rejected → unpaid**.
+
+---
+
+## Manual test checklist
+
+1. Sign in as treasurer, complete authenticator enrolment, and land on the dashboard.
+2. Add blocks and apartments; set maintenance amounts; link a resident account.
+3. Record a cash payment, confirm it, open the receipt PDF.
+4. Reject a pending payment with a reason; it stays in history.
+5. Combine two apartments (one status, one receipt), then separate them.
+6. Add an expense with a voucher; check month and category totals.
+7. Publish a water/electrical/general notice.
+8. Sign in as the resident with an SMS code; submit a bank payment with a UTR; the
+   treasurer confirms it; the resident downloads the receipt.
+9. Clear only `sessionStorage` and reload: the resident must re-verify by SMS and each
+   officer must re-enter password + authenticator code.
+10. Sign in as president or secretary from a new device: a new-device alarm appears for
+    all three officers; verify no record/confirm/void controls are shown.
+11. Lock an officer account, confirm the critical alert, then sign in as that officer and
+    confirm the locked screen. Unlock as treasurer.
+12. Resident cannot open `/admin/*` routes or see another apartment's payments.
+13. Test on a phone-sized viewport: bottom navigation, sheet modals, large touch targets.
+
+---
+
+## Notes and limitations
+
+- The app assumes INR and the Indian financial year for receipt numbering.
+- Amounts are stored as `numeric(12,2)`; PDF uses "Rs." because jsPDF's Helvetica font
+  has no rupee glyph.
+- PDF generation and receipt archiving happen in the browser. Archiving to Storage is
+  best-effort; a failed archive does not invalidate a confirmed receipt.
+- There is no email/SMS notification service; security alarms and announcements appear in
+  the app.
+- Real SMS OTPs require a paid provider. Supabase test phone numbers are free for trials.
+- Browsers only. No native app is included.
