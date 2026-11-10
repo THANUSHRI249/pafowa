@@ -1,12 +1,10 @@
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 import { Navigate } from 'react-router-dom'
 import {
-  ArrowLeft,
   BriefcaseBusiness,
   Eye,
   EyeOff,
   KeyRound,
-  RefreshCw,
   ShieldCheck,
   Smartphone,
   UserRound,
@@ -14,7 +12,7 @@ import {
 import { useAuth } from '../context/AuthContext'
 import { APP_SHORT_TAGLINE, APP_TAGLINE } from '../lib/config'
 import { isEmail } from '../lib/utils'
-import { normalisePhone } from '../lib/security'
+import { isValidPhone, normalisePhone } from '../lib/security'
 import Button from '../components/ui/Button'
 import Card from '../components/ui/Card'
 import { Input } from '../components/ui/Input'
@@ -40,16 +38,10 @@ function BrandMark() {
 }
 
 export default function Login() {
-  const { user, notice, signIn, sendOtp, verifyOtp } = useAuth()
+  const { user, notice, signIn, signInResident } = useAuth()
 
   const [tab, setTab] = useState('resident')
-  const [residentStep, setResidentStep] = useState('phone')
   const [phone, setPhone] = useState('')
-  const [sentPhone, setSentPhone] = useState('')
-  const [otp, setOtp] = useState('')
-  const [resendIn, setResendIn] = useState(0)
-  const [otpError, setOtpError] = useState('')
-
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [showPassword, setShowPassword] = useState(false)
@@ -57,78 +49,46 @@ export default function Login() {
   const [errors, setErrors] = useState({})
   const [loading, setLoading] = useState(false)
 
-  useEffect(() => {
-    if (resendIn <= 0) return undefined
-    const timer = setTimeout(() => setResendIn((value) => value - 1), 1000)
-    return () => clearTimeout(timer)
-  }, [resendIn])
-
   if (user) return <Navigate to="/" replace />
 
   const noticeText =
     notice === 'resident'
-      ? 'For your security, verify your phone number again to open the app.'
+      ? 'For your security, sign in again with your phone number and password.'
       : notice === 'officer'
         ? 'Your committee session has ended. Sign in again with your password and authenticator code.'
         : ''
 
   const clearMessages = () => {
     setFormError('')
-    setOtpError('')
   }
 
   const switchTab = (next) => {
     setTab(next)
     clearMessages()
     setErrors({})
+    setPassword('')
+    setShowPassword(false)
   }
 
-  const sendCode = async (value) => {
-    const normalised = normalisePhone(value)
-    if (!normalised) {
-      setOtpError('Enter your phone number.')
-      return
-    }
+  const handleResident = async (event) => {
+    event.preventDefault()
     clearMessages()
+    const normalised = normalisePhone(phone)
+    const next = {}
+    if (!normalised) next.phone = 'Enter your phone number.'
+    else if (!isValidPhone(normalised)) next.phone = 'Enter a complete phone number, e.g. +91 98400 00000.'
+    if (!password) next.password = 'Enter your password.'
+    setErrors(next)
+    if (Object.keys(next).length) return
+
     setLoading(true)
     try {
-      const result = await sendOtp(value)
-      setSentPhone(result?.phone || normalised)
-      setResidentStep('code')
-      setOtp('')
-      setResendIn(30)
+      await signInResident(normalised, password)
     } catch (error) {
-      setOtpError(error.message || 'Could not send the SMS code.')
+      setFormError(error.message || 'Could not sign in.')
     } finally {
       setLoading(false)
     }
-  }
-
-  const handleSendCode = async (event) => {
-    event.preventDefault()
-    await sendCode(phone)
-  }
-
-  const handleVerify = async (event) => {
-    event.preventDefault()
-    clearMessages()
-    if (!/^\d{6}$/.test(otp.trim())) {
-      setOtpError('Enter the 6-digit code from the SMS.')
-      return
-    }
-    setLoading(true)
-    try {
-      await verifyOtp(sentPhone || phone, otp.trim())
-    } catch (error) {
-      setOtpError(error.message || 'Could not verify that code.')
-    } finally {
-      setLoading(false)
-    }
-  }
-
-  const resend = async () => {
-    if (resendIn > 0) return
-    await sendCode(sentPhone || phone)
   }
 
   const handleCommittee = async (event) => {
@@ -196,81 +156,64 @@ export default function Login() {
           </div>
 
           {tab === 'resident' ? (
-            residentStep === 'phone' ? (
-              <form onSubmit={handleSendCode} className="mt-6 space-y-4" noValidate>
-                <div className="flex items-start gap-3 rounded-2xl bg-brand-50 p-3.5 text-[0.88rem] leading-relaxed text-brand-800">
-                  <Smartphone className="mt-0.5 h-5 w-5 shrink-0" />
-                  <p>
-                    Residents sign in with a one-time SMS code. Enter the mobile number registered with
-                    the association.
-                  </p>
-                </div>
+            <form onSubmit={handleResident} className="mt-6 space-y-4" noValidate>
+              <div className="flex items-start gap-3 rounded-2xl bg-brand-50 p-3.5 text-[0.88rem] leading-relaxed text-brand-800">
+                <Smartphone className="mt-0.5 h-5 w-5 shrink-0" />
+                <p>
+                  Use the phone number and password given to you by the treasurer. Forgotten your
+                  password? Ask the treasurer to reset it.
+                </p>
+              </div>
+              <Input
+                label="Phone number"
+                name="phone"
+                type="tel"
+                inputMode="tel"
+                autoComplete="tel"
+                placeholder="+91 98400 00000"
+                value={phone}
+                onChange={(event) => {
+                  setPhone(event.target.value)
+                  setErrors((current) => ({ ...current, phone: undefined }))
+                  setFormError('')
+                }}
+                error={errors.phone}
+                autoFocus
+              />
+              <div className="relative">
                 <Input
-                  label="Phone number"
-                  name="phone"
-                  type="tel"
-                  inputMode="tel"
-                  autoComplete="tel"
-                  placeholder="+91 98400 00000"
-                  value={phone}
+                  label="Password"
+                  name="password"
+                  type={showPassword ? 'text' : 'password'}
+                  autoComplete="current-password"
+                  placeholder="Enter the password from the treasurer"
+                  value={password}
                   onChange={(event) => {
-                    setPhone(event.target.value)
-                    setOtpError('')
+                    setPassword(event.target.value)
+                    setErrors((current) => ({ ...current, password: undefined }))
+                    setFormError('')
                   }}
-                  error={otpError}
-                  autoFocus
+                  error={errors.password}
+                  className="pr-14"
                 />
-                <Button type="submit" fullWidth loading={loading} icon={Smartphone}>
-                  Send SMS code
-                </Button>
-              </form>
-            ) : (
-              <form onSubmit={handleVerify} className="mt-6 space-y-4" noValidate>
                 <button
                   type="button"
-                  onClick={() => {
-                    setResidentStep('phone')
-                    setOtp('')
-                    setOtpError('')
-                  }}
-                  className="inline-flex items-center gap-1.5 text-sm font-semibold text-brand-600 hover:text-brand-700"
+                  onClick={() => setShowPassword((value) => !value)}
+                  className="absolute bottom-0 right-0 flex h-14 w-14 items-center justify-center rounded-2xl text-slate-400 hover:text-slate-600"
+                  aria-label={showPassword ? 'Hide password' : 'Show password'}
                 >
-                  <ArrowLeft className="h-4 w-4" /> Change number
+                  {showPassword ? <EyeOff className="h-5 w-5" /> : <Eye className="h-5 w-5" />}
                 </button>
-                <div className="rounded-2xl bg-slate-50 p-3.5 text-[0.9rem] leading-relaxed text-slate-600">
-                  We sent a 6-digit code to{' '}
-                  <strong className="text-slate-900">{sentPhone || phone}</strong>.
+              </div>
+              {formError ? (
+                <div className="rounded-2xl border border-rose-100 bg-rose-50 px-4 py-3 text-[0.92rem] text-rose-800" role="alert">
+                  {formError}
                 </div>
-                <Input
-                  label="SMS code"
-                  name="otp"
-                  inputMode="numeric"
-                  autoComplete="one-time-code"
-                  maxLength={6}
-                  placeholder="000000"
-                  value={otp}
-                  onChange={(event) => {
-                    setOtp(event.target.value.replace(/\D/g, '').slice(0, 6))
-                    setOtpError('')
-                  }}
-                  error={otpError}
-                  className="text-center font-mono text-[1.3rem] tracking-[0.5em]"
-                  autoFocus
-                />
-                <Button type="submit" fullWidth loading={loading}>
-                  Verify and open app
-                </Button>
-                <button
-                  type="button"
-                  onClick={resend}
-                  disabled={resendIn > 0 || loading}
-                  className="flex min-h-10 w-full items-center justify-center gap-2 rounded-full text-sm font-semibold text-slate-500 transition hover:bg-slate-50 hover:text-slate-700 disabled:opacity-50"
-                >
-                  <RefreshCw className="h-4 w-4" />
-                  {resendIn > 0 ? `Resend code in ${resendIn}s` : 'Resend SMS code'}
-                </button>
-              </form>
-            )
+              ) : null}
+              <Button type="submit" fullWidth loading={loading} icon={KeyRound}>
+                Open app
+              </Button>
+            </form>
           ) : (
             <form onSubmit={handleCommittee} className="mt-6 space-y-4" noValidate>
               <div className="flex items-start gap-3 rounded-2xl bg-grape-50 p-3.5 text-[0.88rem] leading-relaxed text-grape-600">
@@ -339,7 +282,7 @@ export default function Login() {
 
         <p className="mt-5 flex items-center justify-center gap-2 text-center text-xs leading-relaxed text-slate-500">
           <ShieldCheck className="h-4 w-4 shrink-0 text-emerald-600" />
-          SMS codes for residents · authenticator codes for committee accounts
+          Passwords for residents · authenticator codes for committee accounts
         </p>
       </div>
     </div>

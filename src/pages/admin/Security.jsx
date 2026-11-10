@@ -32,6 +32,8 @@ const EVENT_LABELS = {
   locked: 'Account locked',
   unlocked: 'Account unlocked',
   alert_acknowledged: 'Alert acknowledged',
+  login_created: 'Resident login created',
+  password_reset: 'Resident password changed',
   security_note: 'Security note',
 }
 

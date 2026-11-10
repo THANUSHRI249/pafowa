@@ -4,10 +4,10 @@ import {
   deviceFingerprint,
   deviceLabel,
   hasMfaSession,
-  hasOtpSession,
+  hasResidentSession,
   isOfficerRole,
   markMfaSession,
-  markOtpSession,
+  markResidentSession,
 } from '../lib/security'
 
 const AuthContext = createContext(null)
@@ -82,7 +82,7 @@ export function AuthProvider({ children }) {
           return
         }
 
-        if (!hasOtpSession(profile.id)) {
+        if (!hasResidentSession(profile.id)) {
           await repo.auth.signOut()
           if (!active) return
           setUser(null)
@@ -128,7 +128,7 @@ export function AuthProvider({ children }) {
 
       if (profile.role === 'resident') {
         await repo.auth.signOut()
-        throw new Error('Residents sign in with a phone code. Use the Resident tab.')
+        throw new Error('This is a resident account. Use the Resident tab.')
       }
 
       if (!isOfficerRole(profile.role)) {
@@ -152,11 +152,9 @@ export function AuthProvider({ children }) {
     [completeSession],
   )
 
-  const sendOtp = useCallback(async (phone) => repo.auth.sendPhoneOtp(phone), [])
-
-  const verifyOtp = useCallback(
-    async (phone, code) => {
-      const profile = await repo.auth.verifyPhoneOtp(phone, code)
+  const signInResident = useCallback(
+    async (phone, password) => {
+      const profile = await repo.auth.signInResident(phone, password)
 
       if (profile.security_locked) {
         setUser(profile)
@@ -165,7 +163,12 @@ export function AuthProvider({ children }) {
         return profile
       }
 
-      markOtpSession(profile.id)
+      if (profile.role !== 'resident') {
+        await repo.auth.signOut()
+        throw new Error('This is a committee account. Use the Committee tab.')
+      }
+
+      markResidentSession(profile.id)
       return completeSession(profile)
     },
     [completeSession],
@@ -199,18 +202,6 @@ export function AuthProvider({ children }) {
     setStatus('ready')
   }, [mfa])
 
-  const signUp = useCallback(
-    async (details) => {
-      const result = await repo.auth.signUp(details)
-      if (result?.user) {
-        markOtpSession(result.user.id)
-        await completeSession(result.user)
-      }
-      return result
-    },
-    [completeSession],
-  )
-
   const signOut = useCallback(async () => {
     await repo.auth.signOut()
     setUser(null)
@@ -238,10 +229,8 @@ export function AuthProvider({ children }) {
       isResident: user?.role === 'resident',
       isReadOnlyOfficer: isOfficerRole(user?.role) && user?.role !== 'treasurer',
       signIn,
-      signUp,
+      signInResident,
       signOut,
-      sendOtp,
-      verifyOtp,
       verifyMfa,
       cancelEnrollment,
       refresh,
@@ -253,10 +242,8 @@ export function AuthProvider({ children }) {
       notice,
       mfa,
       signIn,
-      signUp,
+      signInResident,
       signOut,
-      sendOtp,
-      verifyOtp,
       verifyMfa,
       cancelEnrollment,
       refresh,

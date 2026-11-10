@@ -1,7 +1,13 @@
 import { supabase } from './supabase'
 import { paymentInsertFromPayload } from './billing'
 import { OFFICER_ROLES } from './config'
-import { clearVerifiedSessions, isValidPhone, normalisePhone } from './security'
+import {
+  RESIDENT_LOGIN_DOMAIN,
+  clearVerifiedSessions,
+  isValidPhone,
+  normalisePhone,
+  residentLoginEmail,
+} from './security'
 import { addMonths } from './utils'
 
 function fail(error, fallback) {
@@ -25,9 +31,10 @@ async function fetchProfile(id) {
   // Safety net if the signup trigger has not created the profile yet.
   const { data: authData } = await supabase.auth.getUser()
   if (authData?.user?.id !== id) throw new Error('Please sign in again.')
+  const loginEmail = authData.user.email || ''
   const fallback = {
     id,
-    email: authData.user.email || null,
+    email: loginEmail.endsWith(`@${RESIDENT_LOGIN_DOMAIN}`) ? null : loginEmail || null,
     full_name: authData.user.user_metadata?.full_name || 'Resident',
     phone: authData.user.user_metadata?.phone || authData.user.phone || '',
     role: 'resident',
@@ -68,23 +75,22 @@ export const supabaseRepo = {
       if (error) throw new Error(error.message || 'Could not sign in.')
       return fetchProfile(data.user.id)
     },
-    async sendPhoneOtp(phone) {
+    async signInResident(phone, password) {
       const normalised = normalisePhone(phone)
       if (!isValidPhone(normalised)) throw new Error('Enter a valid phone number.')
-      const { error } = await supabase.auth.signInWithOtp({
-        phone: normalised,
-        options: { shouldCreateUser: true },
+      if (!password) throw new Error('Enter your password.')
+      const { data, error } = await supabase.auth.signInWithPassword({
+        email: residentLoginEmail(normalised),
+        password,
       })
-      if (error) throw new Error(error.message || 'Could not send the SMS code.')
-      return { phone: normalised }
-    },
-    async verifyPhoneOtp(phone, token) {
-      const { data, error } = await supabase.auth.verifyOtp({
-        phone: normalisePhone(phone),
-        token: String(token || '').replace(/\s/g, ''),
-        type: 'sms',
-      })
-      if (error) throw new Error(error.message || 'That code is not correct.')
+      if (error) {
+        if (/invalid login credentials|invalid email or password/i.test(error.message || '')) {
+          throw new Error(
+            'That phone number and password do not match. Ask the treasurer to reset your password.',
+          )
+        }
+        throw new Error(error.message || 'Could not sign in.')
+      }
       return fetchProfile(data.user.id)
     },
     async getMfaState() {
@@ -153,20 +159,6 @@ export const supabaseRepo = {
       if (error) throw new Error(error.message || 'Could not register this sign-in.')
       return data
     },
-    async signUp({ email, password, fullName, phone }) {
-      const { data, error } = await supabase.auth.signUp({
-        email: String(email || '').trim(),
-        password,
-        options: {
-          data: { full_name: String(fullName || '').trim(), phone: String(phone || '').trim() },
-        },
-      })
-      if (error) throw new Error(error.message || 'Could not create the account.')
-      if (!data.session) {
-        return { user: null, needsEmailConfirmation: true }
-      }
-      return { user: await fetchProfile(data.user.id), needsEmailConfirmation: false }
-    },
     async signOut() {
       await supabase.auth.signOut()
       clearVerifiedSessions()
@@ -203,6 +195,23 @@ export const supabaseRepo = {
         .order('full_name')
       if (error) fail(error, 'Could not load resident accounts.')
       return data
+    },
+    async createResidentLogin({ fullName, phone, password, apartmentId }) {
+      const { data, error } = await supabase.rpc('admin_create_resident_login', {
+        p_full_name: String(fullName || '').trim(),
+        p_phone: String(phone || '').trim(),
+        p_password: password,
+        p_apartment_id: apartmentId || null,
+      })
+      if (error) throw new Error(error.message || 'Could not create the resident login.')
+      return data
+    },
+    async resetResidentPassword(profileId, password) {
+      const { error } = await supabase.rpc('admin_reset_resident_password', {
+        p_profile_id: profileId,
+        p_password: password,
+      })
+      if (error) throw new Error(error.message || 'Could not reset the password.')
     },
   },
 

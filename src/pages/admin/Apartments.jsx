@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import {
   Building2,
   Check,
+  KeyRound,
   Layers,
   Link2,
   Pencil,
@@ -15,6 +16,7 @@ import { useToast } from '../../context/ToastContext'
 import { useAsyncData } from '../../hooks/useAsyncData'
 import { repo } from '../../lib/data'
 import { OCCUPANCY_OPTIONS } from '../../lib/config'
+import { isValidPhone, normalisePhone } from '../../lib/security'
 import { cn, formatDate, money } from '../../lib/utils'
 import Button from '../../components/ui/Button'
 import Card from '../../components/ui/Card'
@@ -42,6 +44,12 @@ function labelOf(apartment) {
   return apartment.display_label || `${apartment.block}${apartment.unit_number}`
 }
 
+function suggestPassword() {
+  const random = new Uint32Array(1)
+  crypto.getRandomValues(random)
+  return `Pargavi@${String(random[0] % 10000).padStart(4, '0')}`
+}
+
 export default function Apartments() {
   const { isTreasurer } = useAuth()
   const toast = useToast()
@@ -60,6 +68,10 @@ export default function Apartments() {
   const [combinedSearch, setCombinedSearch] = useState('')
   const [combinedErrors, setCombinedErrors] = useState({})
   const [combinedSaving, setCombinedSaving] = useState(false)
+  const [loginModal, setLoginModal] = useState({ open: false, mode: 'create', resident: null })
+  const [loginForm, setLoginForm] = useState({ full_name: '', phone: '', password: '' })
+  const [loginErrors, setLoginErrors] = useState({})
+  const [loginSaving, setLoginSaving] = useState(false)
   const [separateTarget, setSeparateTarget] = useState(null)
   const [separating, setSeparating] = useState(false)
 
@@ -79,6 +91,7 @@ export default function Apartments() {
   const payments = data?.payments || []
 
   const residentById = useMemo(() => new Map(residents.map((r) => [r.id, r])), [residents])
+  const linkedLogin = aptForm.user_id ? residentById.get(aptForm.user_id) : null
 
   const blocks = useMemo(
     () => [...new Set(apartments.map((apartment) => apartment.block))].sort(),
@@ -180,8 +193,59 @@ export default function Apartments() {
     }
   }
 
-  const saveBlock = async (event) => {
+  const openCreateLogin = () => {
+    setLoginForm({
+      full_name: aptForm.resident_name || '',
+      phone: aptForm.contact_phone || '',
+      password: suggestPassword(),
+    })
+    setLoginErrors({})
+    setLoginModal({ open: true, mode: 'create', resident: null })
+  }
+
+  const openResetLogin = (resident) => {
+    setLoginForm({ full_name: resident.full_name || '', phone: resident.phone || '', password: suggestPassword() })
+    setLoginErrors({})
+    setLoginModal({ open: true, mode: 'reset', resident })
+  }
+
+  const saveLogin = async (event) => {
     event.preventDefault()
+    const next = {}
+    const normalised = normalisePhone(loginForm.phone)
+    if (loginModal.mode === 'create') {
+      if (!loginForm.full_name.trim()) next.full_name = 'Enter the resident name.'
+      if (!isValidPhone(normalised)) next.phone = 'Enter a complete phone number.'
+    }
+    if (loginForm.password.trim().length < 8) next.password = 'Use at least 8 characters.'
+    setLoginErrors(next)
+    if (Object.keys(next).length) return
+
+    setLoginSaving(true)
+    try {
+      if (loginModal.mode === 'create') {
+        await repo.profiles.createResidentLogin({
+          fullName: loginForm.full_name,
+          phone: normalised,
+          password: loginForm.password,
+          apartmentId: aptModal.apartment.id,
+        })
+        toast.success(`Login created for ${normalised}. Give the password to the resident.`)
+        setAptModal({ open: false, apartment: null })
+      } else {
+        await repo.profiles.resetResidentPassword(loginModal.resident.id, loginForm.password)
+        toast.success('Password changed. Give the new password to the resident.')
+      }
+      setLoginModal({ open: false, mode: 'create', resident: null })
+      reload()
+    } catch (err) {
+      setLoginErrors({ form: err.message })
+    } finally {
+      setLoginSaving(false)
+    }
+  }
+
+  const saveBlock = async (event) => {    event.preventDefault()
     const block = blockForm.block.trim()
     const count = Number(blockForm.count)
     const start = Number(blockForm.start)
@@ -730,11 +794,57 @@ export default function Apartments() {
               { value: '', label: 'Not linked' },
               ...residents.map((resident) => ({
                 value: resident.id,
-                label: `${resident.full_name} · ${resident.email || resident.phone || 'No contact'}`,
+                label: `${resident.full_name} · ${resident.phone || 'No phone number'}`,
               })),
             ]}
-            hint="Ask residents to sign in with their phone, then link the apartment here."
+            hint="Create this flat's login below, or link an existing resident account."
           />
+          <div className="rounded-2xl border border-brand-100 bg-brand-50/50 p-4">
+            <div className="flex items-start gap-3">
+              <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-white text-brand-600 shadow-sm">
+                <KeyRound className="h-5 w-5" />
+              </span>
+              <div className="min-w-0 flex-1">
+                <p className="text-[0.95rem] font-semibold text-slate-900">Resident app login</p>
+                {aptModal.apartment ? (
+                  linkedLogin ? (
+                    <>
+                      <p className="mt-0.5 text-sm leading-relaxed text-slate-600">
+                        Sign-in phone{' '}
+                        <strong className="font-semibold text-slate-900">
+                          {linkedLogin.phone || 'not set'}
+                        </strong>{' '}
+                        · password set by the committee
+                      </p>
+                      <Button
+                        size="sm"
+                        variant="secondary"
+                        className="mt-2.5"
+                        icon={KeyRound}
+                        onClick={() => openResetLogin(linkedLogin)}
+                      >
+                        Reset password
+                      </Button>
+                    </>
+                  ) : (
+                    <>
+                      <p className="mt-0.5 text-sm leading-relaxed text-slate-600">
+                        No login yet. Create a phone number and password, then hand them to the
+                        resident.
+                      </p>
+                      <Button size="sm" className="mt-2.5" icon={KeyRound} onClick={openCreateLogin}>
+                        Create login
+                      </Button>
+                    </>
+                  )
+                ) : (
+                  <p className="mt-0.5 text-sm leading-relaxed text-slate-600">
+                    Save the apartment first, then create its resident login here.
+                  </p>
+                )}
+              </div>
+            </div>
+          </div>
           <div className="rounded-2xl bg-slate-50 p-4">
             <Checkbox
               label="Active for maintenance billing"
@@ -753,6 +863,103 @@ export default function Apartments() {
               Added {formatDate(aptModal.apartment.created_at)} · ID {String(aptModal.apartment.id).slice(0, 8)}
             </p>
           ) : null}
+        </form>
+      </Modal>
+
+      {/* Resident login form */}
+      <Modal
+        open={loginModal.open}
+        onClose={() => setLoginModal({ open: false, mode: 'create', resident: null })}
+        title={loginModal.mode === 'create' ? 'Create resident login' : 'Reset resident password'}
+        description={
+          loginModal.mode === 'create'
+            ? 'The resident signs in on the Resident tab with this phone number and password.'
+            : 'Choose a new password and give it to the resident. Their old password stops working immediately.'
+        }
+        size="md"
+        footer={
+          <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+            <Button
+              variant="secondary"
+              onClick={() => setLoginModal({ open: false, mode: 'create', resident: null })}
+              disabled={loginSaving}
+            >
+              Cancel
+            </Button>
+            <Button type="submit" form="resident-login-form" icon={KeyRound} loading={loginSaving}>
+              {loginModal.mode === 'create' ? 'Create login' : 'Save new password'}
+            </Button>
+          </div>
+        }
+      >
+        <form id="resident-login-form" onSubmit={saveLogin} className="space-y-4" noValidate>
+          {loginErrors.form ? (
+            <div className="rounded-2xl border border-rose-100 bg-rose-50 px-4 py-3 text-sm text-rose-800">
+              {loginErrors.form}
+            </div>
+          ) : null}
+          {loginModal.mode === 'create' ? (
+            <div className="grid gap-4 sm:grid-cols-2">
+              <Input
+                label="Resident name"
+                name="login_full_name"
+                placeholder="Full name"
+                value={loginForm.full_name}
+                onChange={(event) => {
+                  setLoginForm((current) => ({ ...current, full_name: event.target.value }))
+                  setLoginErrors((current) => ({ ...current, full_name: undefined }))
+                }}
+                error={loginErrors.full_name}
+              />
+              <Input
+                label="Sign-in phone"
+                name="login_phone"
+                type="tel"
+                placeholder="+91 98400 00000"
+                value={loginForm.phone}
+                onChange={(event) => {
+                  setLoginForm((current) => ({ ...current, phone: event.target.value }))
+                  setLoginErrors((current) => ({ ...current, phone: undefined }))
+                }}
+                error={loginErrors.phone}
+              />
+            </div>
+          ) : (
+            <div className="rounded-2xl bg-slate-50 px-4 py-3 text-sm text-slate-600">
+              {loginModal.resident?.full_name} · {loginModal.resident?.phone || 'No phone number'}
+            </div>
+          )}
+          <div>
+            <div className="flex items-end gap-2">
+              <div className="min-w-0 flex-1">
+                <Input
+                  label="Password"
+                  name="login_password"
+                  type="text"
+                  autoComplete="new-password"
+                  className="font-mono"
+                  value={loginForm.password}
+                  onChange={(event) => {
+                    setLoginForm((current) => ({ ...current, password: event.target.value }))
+                    setLoginErrors((current) => ({ ...current, password: undefined }))
+                  }}
+                  error={loginErrors.password}
+                />
+              </div>
+              <Button
+                type="button"
+                variant="secondary"
+                size="md"
+                onClick={() => setLoginForm((current) => ({ ...current, password: suggestPassword() }))}
+              >
+                New
+              </Button>
+            </div>
+            <p className="mt-1 text-sm leading-relaxed text-slate-500">
+              At least 8 characters. Write it down before saving — the resident will need it to open
+              the app.
+            </p>
+          </div>
         </form>
       </Modal>
 

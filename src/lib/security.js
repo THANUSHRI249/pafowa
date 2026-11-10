@@ -1,7 +1,12 @@
 import { OFFICER_ROLES } from './config'
 
-const OTP_SESSION_KEY = 'pafowa.otp.session'
+const RESIDENT_SESSION_KEY = 'pafowa.resident.session'
 const MFA_SESSION_KEY = 'pafowa.mfa.session'
+
+// Residents sign in with their phone number. Supabase Auth only knows email
+// accounts, so each resident phone maps to one reserved address on this domain.
+// Nothing is ever sent to it; it is only the account key.
+export const RESIDENT_LOGIN_DOMAIN = 'residents.pafowa.in'
 const SECURITY_EVENT = 'pafowa:security-changed'
 
 export function notifySecurityChanged() {
@@ -37,17 +42,22 @@ export function isValidPhone(value) {
   return /^\+[1-9]\d{7,14}$/.test(normalisePhone(value))
 }
 
-export function markOtpSession(userId) {
+export function residentLoginEmail(phone) {
+  const digits = normalisePhone(phone).replace(/\D/g, '')
+  return digits ? `${digits}@${RESIDENT_LOGIN_DOMAIN}` : ''
+}
+
+export function markResidentSession(userId) {
   try {
-    sessionStorage.setItem(OTP_SESSION_KEY, userId)
+    sessionStorage.setItem(RESIDENT_SESSION_KEY, userId)
   } catch {
     // sessionStorage can be unavailable in hardened browsers.
   }
 }
 
-export function hasOtpSession(userId) {
+export function hasResidentSession(userId) {
   try {
-    return sessionStorage.getItem(OTP_SESSION_KEY) === userId
+    return sessionStorage.getItem(RESIDENT_SESSION_KEY) === userId
   } catch {
     return false
   }
@@ -71,7 +81,7 @@ export function hasMfaSession(userId) {
 
 export function clearVerifiedSessions() {
   try {
-    sessionStorage.removeItem(OTP_SESSION_KEY)
+    sessionStorage.removeItem(RESIDENT_SESSION_KEY)
     sessionStorage.removeItem(MFA_SESSION_KEY)
   } catch {
     // ignore

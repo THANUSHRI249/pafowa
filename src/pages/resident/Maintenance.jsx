@@ -143,7 +143,7 @@ function MaintenanceContent() {
             description="Please ask the treasurer to link your apartment. Once linked, you can submit maintenance payments here."
           />
           <div className="rounded-2xl bg-brand-50 p-4 text-center text-[0.9rem] leading-relaxed text-brand-800">
-            Signed in as <span className="font-semibold">{user.email}</span>
+            Signed in as <span className="font-semibold">{user.phone || user.full_name}</span>
           </div>
         </Card>
       </div>

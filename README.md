@@ -1,10 +1,10 @@
 # PAFOWA · Pargavi Apartments Foundation Committee Association
 
 A lightweight, mobile-first maintenance management app for an apartment association.
-Residents verify a one-time SMS code, pay monthly maintenance and download receipts.
-The treasurer records and confirms payments, tracks expenses, manages apartments and
-publishes notices. The president and secretary have read-only oversight and share
-security alarms with the treasurer.
+Residents sign in with a phone number and a password issued by the treasurer, pay
+monthly maintenance and download receipts. The treasurer records and confirms payments,
+tracks expenses, manages apartments and publishes notices. The president and secretary
+have read-only oversight and share security alarms with the treasurer.
 
 Built with **React 19 + Vite**, **Tailwind CSS v4**, **Lucide icons**,
 **Supabase** (PostgreSQL, Auth, Storage, TOTP MFA) and **jsPDF**.
@@ -14,7 +14,7 @@ Built with **React 19 + Vite**, **Tailwind CSS v4**, **Lucide icons**,
 ## What is included
 
 **Resident**
-- SMS one-time code at every new browser session
+- Phone number + password issued by the treasurer, at every new browser session
 - Dashboard with apartment, current month status, amount due, last payment and notices
 - Submit a payment (Cash or Bank / UPI) with duplicate protection
 - Payment history with month / status / method filters
@@ -38,9 +38,9 @@ adds the real blocks, apartments and amounts.
 
 ## Security model
 
-- **Residents** sign in with a phone number and a 6-digit SMS code. The code is required
-  again for every new browser session. Residents can only read and write records for the
-  apartment linked to their account.
+- **Residents** sign in with a phone number and a password set by the treasurer. The
+  password is required again for every new browser session. Residents can only read and
+  write records for the apartment linked to their account.
 - **Officers** sign in with email + password and then a 6-digit authenticator-app code.
   RLS helper functions require the session to be at **AAL2**, so a password-only session
   cannot read data through the API either.
@@ -94,12 +94,18 @@ In *Authentication → Providers*:
 
 - **Email** — enable it for committee officers. Disable *Confirm email* while onboarding
   a small association, or ask officers to confirm before their first sign-in.
-- **Phone** — enable phone sign-ups so residents can verify an SMS code. Supabase needs an
-  SMS provider for real numbers (Twilio, MessageBird, Vonage, etc.). Provider messages are
-  not covered by the free Supabase plan.
-  - For a free trial, add up to 10 **test phone numbers** under *Authentication → Phone →
-    Test OTP* and give each resident a fixed code. Test numbers do not send real SMS.
-  - For a live association, connect a provider and add credit with that provider.
+- **Phone** — not needed. Resident logins use the email provider with a reserved address
+  and a committee-issued password, so no SMS provider, credit or test-OTP setup is
+  required anywhere in this app.
+
+> Resident accounts are created **inside the app** by the treasurer (see below). Their
+> login address is `<phone digits>@residents.pafowa.in`, a reserved domain that is never
+> emailed. The app maps the resident's phone number to that address automatically.
+
+Optional hardening: turn **Allow new users to sign up** off under
+*Authentication → Sign In / Up*. The app has no sign-up screen and treasurer-created
+logins are written directly by the database function, so switching sign-ups off blocks
+strangers without affecting residents or officers.
 
 ### 4. Create the first treasurer
 
@@ -122,10 +128,27 @@ Create the president and secretary the same way, with roles `president` and `sec
 
 ### 5. Onboard residents
 
-Residents sign in on the **Resident** tab with the phone number registered with the
-association. Supabase creates their auth user and profile automatically. The treasurer
-then opens **Apartments → Edit** and links that account to its apartment. A resident only
-sees their own unit and payments.
+Residents do **not** sign themselves up. The treasurer creates each login:
+
+1. Open **Apartments** and edit the flat.
+2. Under **Resident app login**, choose **Create login**.
+3. Enter the resident's name, their phone number and a password (the app suggests a
+   strong one). The apartment is linked automatically.
+4. Hand the phone number and password to the resident. They sign in on the **Resident**
+   tab and only see their own unit and payments.
+
+Lost password? **Apartments → Edit → Reset password** sets a new one immediately; the old
+password stops working.
+
+Because a resident's phone number is their login, it is read-only on the Profile page.
+Ask the treasurer if a number must change.
+
+> **Fallback:** resident logins are written by a database function in
+> `supabase/schema.sql`. If your Supabase project refuses the write (a permissions error
+> appears), create the account manually in *Authentication → Users → Add user* using the
+> resident's phone digits + `@residents.pafowa.in` (for example
+> `919840067890@residents.pafowa.in`), the chosen password, and **Auto Confirm User**
+> ticked. Sign-in works the same way.
 
 ### 6. Run
 
@@ -162,9 +185,8 @@ npx netlify-cli deploy --prod --dir=dist
 The anon key is safe to ship in the browser; RLS enforces access. Never add the
 service-role key to Netlify or to this repository.
 
-> **Free-hosting caveat:** hosting is free, but real SMS delivery is not. For a live
-> association you need an SMS provider. Supabase test OTP numbers are the free way to
-> trial the resident login.
+> **No SMS costs:** resident logins are phone + password created by the treasurer, so the
+> app never sends a text message and needs no paid provider.
 
 ---
 
@@ -218,10 +240,11 @@ precedence is **confirmed → pending → rejected → unpaid**.
 5. Combine two apartments (one status, one receipt), then separate them.
 6. Add an expense with a voucher; check month and category totals.
 7. Publish a water/electrical/general notice.
-8. Sign in as the resident with an SMS code; submit a bank payment with a UTR; the
-   treasurer confirms it; the resident downloads the receipt.
-9. Clear only `sessionStorage` and reload: the resident must re-verify by SMS and each
-   officer must re-enter password + authenticator code.
+8. Create a resident login from **Apartments → Edit**; sign in as that resident with the
+   phone number and password, submit a bank payment with a UTR; the treasurer confirms
+   it; the resident downloads the receipt.
+9. Clear only `sessionStorage` and reload: the resident must re-enter their password and
+   each officer must re-enter password + authenticator code.
 10. Sign in as president or secretary from a new device: a new-device alarm appears for
     all three officers; verify no record/confirm/void controls are shown.
 11. Lock an officer account, confirm the critical alert, then sign in as that officer and
@@ -240,5 +263,6 @@ precedence is **confirmed → pending → rejected → unpaid**.
   best-effort; a failed archive does not invalidate a confirmed receipt.
 - There is no email/SMS notification service; security alarms and announcements appear in
   the app.
-- Real SMS OTPs require a paid provider. Supabase test phone numbers are free for trials.
+- The treasurer issues and resets resident passwords in person. There is no self-service
+  password reset, which keeps the association free of SMS or email costs.
 - Browsers only. No native app is included.

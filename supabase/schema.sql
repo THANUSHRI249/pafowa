@@ -9,8 +9,10 @@
 --   private Storage buckets for vouchers and archived receipts.
 --
 -- Security model:
---   * Residents sign in with a phone OTP and can read/write only their own
---     apartment's payment records.
+--   * Residents sign in with their phone number plus a password issued by the
+--     treasurer, and can read/write only their own apartment's payment records.
+--     No SMS provider is involved. The phone maps to a reserved
+--     `<digits>@residents.pafowa.in` auth account; nothing is ever emailed there.
 --   * Committee officers are treasurer, president and secretary. All three must
 --     present an authenticator-app code (AAL2) before the RLS helpers below let
 --     them read anything, so a stolen password alone cannot touch the data.
@@ -32,8 +34,9 @@ create extension if not exists pgcrypto with schema extensions;
 
 create table if not exists public.profiles (
   id uuid primary key references auth.users(id) on delete cascade,
-  -- Phone-OTP residents have no email. Postgres allows multiple NULLs in a
-  -- unique column, so email stays unique for committee logins.
+  -- Committee logins use a real email. Resident logins use a phone number, and
+  -- their reserved @residents.pafowa.in address is deliberately not stored here,
+  -- so email stays unique and meaningful.
   email text unique,
   full_name text not null default '',
   phone text not null default '',
@@ -216,12 +219,26 @@ create table if not exists public.security_events (
   id uuid primary key default gen_random_uuid(),
   actor_id uuid references public.profiles(id) on delete set null,
   event_type text not null check (
-    event_type in ('login', 'new_device', 'locked', 'unlocked', 'alert_acknowledged', 'security_note')
+    event_type in (
+      'login', 'new_device', 'locked', 'unlocked', 'alert_acknowledged',
+      'login_created', 'password_reset', 'security_note'
+    )
   ),
   device_hash text not null default '',
   detail text not null default '',
   created_at timestamptz not null default now()
 );
+
+-- Keep the check constraint current when this file is re-applied.
+alter table public.security_events
+  drop constraint if exists security_events_event_type_check;
+alter table public.security_events
+  add constraint security_events_event_type_check check (
+    event_type in (
+      'login', 'new_device', 'locked', 'unlocked', 'alert_acknowledged',
+      'login_created', 'password_reset', 'security_note'
+    )
+  );
 
 -- Alarms shown in the red banner to the treasurer, president and secretary.
 create table if not exists public.security_alerts (
@@ -276,6 +293,44 @@ $$;
 
 -- Supabase puts the assurance level in the access token. Officers must have
 -- completed the TOTP challenge, otherwise their token says 'aal1'.
+-- Normalises a phone number to +91XXXXXXXXXX. Returns null when the input
+-- cannot be a phone number. Mirrors normalisePhone() in src/lib/security.js.
+create or replace function public.normalise_phone(p_phone text)
+returns text
+language plpgsql
+immutable
+set search_path = public, pg_temp
+as $$
+declare
+  v_digits text;
+begin
+  v_digits := regexp_replace(coalesce(p_phone, ''), '[^0-9]', '', 'g');
+  if length(v_digits) = 10 then
+    v_digits := '91' || v_digits;
+  elsif length(v_digits) = 11 and left(v_digits, 1) = '0' then
+    v_digits := '91' || right(v_digits, 10);
+  end if;
+  if v_digits !~ '^[1-9][0-9]{7,14}$' then
+    return null;
+  end if;
+  return '+' || v_digits;
+end;
+$$;
+
+-- The reserved Supabase Auth email for a resident phone number. It is only an
+-- account key: no message is ever sent to it.
+create or replace function public.resident_login_email(p_phone text)
+returns text
+language sql
+immutable
+set search_path = public, pg_temp
+as $$
+  select case
+    when public.normalise_phone(p_phone) is null then null
+    else replace(public.normalise_phone(p_phone), '+', '') || '@residents.pafowa.in'
+  end;
+$$;
+
 create or replace function public.jwt_is_aal2()
 returns boolean
 language sql
@@ -415,7 +470,10 @@ begin
   insert into public.profiles (id, email, full_name, phone, role)
   values (
     new.id,
-    nullif(coalesce(new.email, ''), ''),
+    case
+      when coalesce(new.email, '') like '%@residents.pafowa.in' then null
+      else nullif(coalesce(new.email, ''), '')
+    end,
     coalesce(new.raw_user_meta_data ->> 'full_name', 'Resident'),
     coalesce(nullif(new.raw_user_meta_data ->> 'phone', ''), new.phone, ''),
     'resident'
@@ -449,6 +507,9 @@ begin
     end if;
     if new.email is distinct from old.email then
       raise exception 'Ask the treasurer to change your login email.';
+    end if;
+    if old.role = 'resident' and new.phone is distinct from old.phone then
+      raise exception 'Ask the treasurer to change your login phone number.';
     end if;
   end if;
 
@@ -1082,6 +1143,173 @@ end;
 $$;
 
 -- -----------------------------------------------------------------------------
+-- Resident logins
+-- -----------------------------------------------------------------------------
+-- The treasurer sets each resident's phone number and password, so the
+-- association never needs an SMS provider. Each phone is stored as a Supabase
+-- email account on the reserved @residents.pafowa.in domain; GoTrue only uses
+-- that address as an account key and never sends anything to it. The password is
+-- hashed with bcrypt exactly as Supabase Auth does.
+
+create or replace function public.admin_create_resident_login(
+  p_full_name text,
+  p_phone text,
+  p_password text,
+  p_apartment_id uuid default null
+)
+returns uuid
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_phone text;
+  v_login_email text;
+  v_name text;
+  v_user_id uuid := gen_random_uuid();
+  v_apartment public.apartments;
+begin
+  if not public.is_treasurer() then
+    raise exception 'Only the treasurer can create resident logins.';
+  end if;
+
+  v_phone := public.normalise_phone(p_phone);
+  if v_phone is null then
+    raise exception 'Enter a valid phone number.';
+  end if;
+  if length(coalesce(p_password, '')) < 8 then
+    raise exception 'Use a password with at least 8 characters.';
+  end if;
+
+  v_login_email := public.resident_login_email(v_phone);
+  v_name := coalesce(nullif(trim(p_full_name), ''), 'Resident');
+
+  if p_apartment_id is not null then
+    select * into v_apartment from public.apartments where id = p_apartment_id;
+    if not found then
+      raise exception 'That apartment does not exist.';
+    end if;
+    if v_apartment.user_id is not null then
+      raise exception 'That apartment already has a linked login. Reset its password instead.';
+    end if;
+  end if;
+
+  if exists (select 1 from public.profiles where phone = v_phone) then
+    raise exception 'A login already exists for this phone number. Reset its password instead.';
+  end if;
+  if exists (select 1 from auth.users where lower(email) = v_login_email) then
+    raise exception 'A login already exists for this phone number.';
+  end if;
+
+  insert into auth.users (
+    instance_id, id, aud, role, email, encrypted_password,
+    email_confirmed_at, created_at, updated_at,
+    raw_app_meta_data, raw_user_meta_data,
+    confirmation_token, recovery_token, email_change_token_new, email_change
+  ) values (
+    '00000000-0000-0000-0000-000000000000',
+    v_user_id,
+    'authenticated',
+    'authenticated',
+    v_login_email,
+    extensions.crypt(p_password, extensions.gen_salt('bf', 10)),
+    now(), now(), now(),
+    jsonb_build_object('provider', 'email', 'providers', jsonb_build_array('email')),
+    jsonb_build_object('full_name', v_name, 'phone', v_phone),
+    '', '', '', ''
+  );
+
+  -- Password sign-in only needs the auth.users row. Identity layouts differ
+  -- between auth versions, so a failed identity insert must not block the login.
+  begin
+    insert into auth.identities (
+      provider_id, user_id, identity_data, provider, last_sign_in_at, created_at, updated_at
+    ) values (
+      v_login_email,
+      v_user_id,
+      jsonb_build_object(
+        'sub', v_user_id::text,
+        'email', v_login_email,
+        'email_verified', true,
+        'phone_verified', false
+      ),
+      'email', now(), now(), now()
+    );
+  exception when others then
+    null;
+  end;
+
+  if p_apartment_id is not null then
+    update public.apartments
+    set user_id = v_user_id,
+        resident_name = case
+          when coalesce(trim(resident_name), '') = '' then v_name
+          else resident_name
+        end,
+        contact_phone = case
+          when coalesce(trim(contact_phone), '') = '' then v_phone
+          else contact_phone
+        end,
+        updated_at = now()
+    where id = p_apartment_id;
+  end if;
+
+  insert into public.security_events (actor_id, event_type, detail)
+  values (
+    auth.uid(),
+    'login_created',
+    'Created resident login for ' || v_name || ' (' || v_phone || ')'
+  );
+
+  return v_user_id;
+end;
+$$;
+
+create or replace function public.admin_reset_resident_password(
+  p_profile_id uuid,
+  p_password text
+)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_profile public.profiles;
+begin
+  if not public.is_treasurer() then
+    raise exception 'Only the treasurer can reset resident passwords.';
+  end if;
+
+  if length(coalesce(p_password, '')) < 8 then
+    raise exception 'Use a password with at least 8 characters.';
+  end if;
+
+  select * into v_profile from public.profiles where id = p_profile_id;
+  if not found or v_profile.role <> 'resident' then
+    raise exception 'Only resident logins can be reset here.';
+  end if;
+
+  update auth.users
+  set encrypted_password = extensions.crypt(p_password, extensions.gen_salt('bf', 10)),
+      updated_at = now()
+  where id = p_profile_id;
+
+  if not found then
+    raise exception 'That resident login no longer exists.';
+  end if;
+
+  insert into public.security_events (actor_id, event_type, detail)
+  values (
+    auth.uid(),
+    'password_reset',
+    'Changed the app password for ' || v_profile.full_name
+      || ' (' || coalesce(nullif(v_profile.phone, ''), 'no phone') || ')'
+  );
+end;
+$$;
+
+-- -----------------------------------------------------------------------------
 -- Login security RPCs
 -- -----------------------------------------------------------------------------
 
@@ -1322,6 +1550,8 @@ $$;
 -- -----------------------------------------------------------------------------
 
 revoke all on function public.set_updated_at() from public;
+revoke all on function public.normalise_phone(text) from public;
+revoke all on function public.resident_login_email(text) from public;
 revoke all on function public.jwt_is_aal2() from public;
 revoke all on function public.officer_session() from public;
 revoke all on function public.is_officer() from public;
@@ -1335,6 +1565,8 @@ revoke all on function public.guard_profile_update() from public;
 revoke all on function public.guard_payment_update() from public;
 revoke all on function public.guard_combined_member() from public;
 revoke all on function public.next_receipt_number(integer) from public;
+revoke all on function public.admin_create_resident_login(text, text, text, uuid) from public;
+revoke all on function public.admin_reset_resident_password(uuid, text) from public;
 revoke all on function public.register_login(text, text, text) from public;
 revoke all on function public.acknowledge_alert(uuid) from public;
 revoke all on function public.lock_officer(uuid, text) from public;
@@ -1350,6 +1582,8 @@ grant execute on function public.confirm_payment(uuid) to authenticated;
 grant execute on function public.create_combined_unit(text, numeric, uuid[], text) to authenticated;
 grant execute on function public.update_combined_unit(uuid, text, numeric, uuid[], text) to authenticated;
 grant execute on function public.separate_combined_unit(uuid) to authenticated;
+grant execute on function public.admin_create_resident_login(text, text, text, uuid) to authenticated;
+grant execute on function public.admin_reset_resident_password(uuid, text) to authenticated;
 grant execute on function public.register_login(text, text, text) to authenticated;
 grant execute on function public.acknowledge_alert(uuid) to authenticated;
 grant execute on function public.lock_officer(uuid, text) to authenticated;

@@ -74,7 +74,10 @@ export default function Profile() {
                     {ROLE_LABELS[user?.role] || 'Resident'}
                   </Pill>
                   <span className="inline-flex items-center gap-1.5 text-sm text-slate-500">
-                    <Mail className="h-4 w-4" /> {user?.email || user?.phone || 'Phone login'}
+                    {isResident ? <Phone className="h-4 w-4" /> : <Mail className="h-4 w-4" />}
+                    {isResident
+                      ? user?.phone || 'No phone number'
+                      : user?.email || 'Committee login'}
                   </span>
                 </div>
               </div>
@@ -100,6 +103,10 @@ export default function Profile() {
                 onChange={(event) => setForm((current) => ({ ...current, phone: event.target.value }))}
                 placeholder="+91 98400 00000"
                 autoComplete="tel"
+                disabled={isResident}
+                hint={
+                  isResident ? 'This is your login number. Ask the treasurer to change it.' : undefined
+                }
               />
               <div className="flex flex-wrap items-center gap-3">
                 <Button type="submit" loading={saving}>
@@ -195,7 +202,7 @@ export default function Profile() {
               <div className="flex items-center justify-between gap-3">
                 <dt className="text-slate-500">Sign-in</dt>
                 <dd className="font-semibold text-slate-900">
-                  {isResident ? 'Phone code (SMS)' : 'Password + authenticator'}
+                  {isResident ? 'Phone number + password' : 'Password + authenticator'}
                 </dd>
               </div>
               {user?.created_at ? (

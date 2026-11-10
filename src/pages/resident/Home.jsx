@@ -140,8 +140,8 @@ export default function ResidentHome() {
             }
           />
           <div className="rounded-2xl bg-brand-50/70 p-4 text-[0.9rem] leading-relaxed text-brand-800">
-            <p className="font-semibold">Signed in as {user?.email}</p>
-            <p className="mt-1">The treasurer uses this email to connect your apartment.</p>
+            <p className="font-semibold">Signed in as {user?.phone || user?.full_name}</p>
+            <p className="mt-1">The treasurer links your flat to this phone number.</p>
           </div>
         </Card>
       ) : (
