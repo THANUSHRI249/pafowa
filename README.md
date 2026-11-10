@@ -1,13 +1,14 @@
 # PAFOWA · Pargavi Apartments Foundation Committee Association
 
 A lightweight, mobile-first maintenance management app for an apartment association.
-Residents sign in with a phone number and a password issued by the treasurer, pay
-monthly maintenance and download receipts. The treasurer records and confirms payments,
-tracks expenses, manages apartments and publishes notices. The president and secretary
-have read-only oversight and share security alarms with the treasurer.
+Every account — resident or committee — signs in with its own phone number and a
+password issued by the committee. Residents pay monthly maintenance and download
+receipts. The treasurer records and confirms payments, tracks expenses, manages
+apartments and publishes notices. The president and secretary have read-only oversight
+and share security alarms with the treasurer.
 
 Built with **React 19 + Vite**, **Tailwind CSS v4**, **Lucide icons**,
-**Supabase** (PostgreSQL, Auth, Storage, TOTP MFA) and **jsPDF**.
+**Supabase** (PostgreSQL, Auth, Storage) and **jsPDF**.
 
 ---
 
@@ -22,7 +23,7 @@ Built with **React 19 + Vite**, **Tailwind CSS v4**, **Lucide icons**,
 - Profile with name and phone
 
 **Committee (treasurer, president, secretary)**
-- Password + authenticator-app code (TOTP) at every new session
+- Phone number + password, the same login as residents, at every new session
 - Treasurer: full access to collections, expenses, apartments, notices and security
 - President and secretary: read-only oversight of the same records
 - Security page: new-device alarms, known devices, officer activity, instant lockdown
@@ -41,9 +42,9 @@ adds the real blocks, apartments and amounts.
 - **Residents** sign in with a phone number and a password set by the treasurer. The
   password is required again for every new browser session. Residents can only read and
   write records for the apartment linked to their account.
-- **Officers** sign in with email + password and then a 6-digit authenticator-app code.
-  RLS helper functions require the session to be at **AAL2**, so a password-only session
-  cannot read data through the API either.
+- **Officers** sign in with their own phone number and a password issued by the committee.
+  It is the same form as residents. The password is required again for every new browser
+  session.
 - **New-device alarm.** Every officer sign-in from a device the association has not seen
   raises a warning alert for all three officers. The alert appears as a red banner and on
   the Security page until a committee member acknowledges it.
@@ -92,39 +93,48 @@ There is deliberately **no seed file**. The database starts empty.
 
 In *Authentication → Providers*:
 
-- **Email** — enable it for committee officers. Disable *Confirm email* while onboarding
-  a small association, or ask officers to confirm before their first sign-in.
-- **Phone** — not needed. Resident logins use the email provider with a reserved address
-  and a committee-issued password, so no SMS provider, credit or test-OTP setup is
-  required anywhere in this app.
+- **Email** — enable it. Supabase uses the email provider for password sign-ins; the app
+  maps every phone number to a reserved address, so no real email is involved.
+- **Phone** — not needed. Every login uses the email provider with a reserved address and
+  a committee-issued password, so no SMS provider, credit or test-OTP setup is required
+  anywhere in this app.
 
-> Resident accounts are created **inside the app** by the treasurer (see below). Their
-> login address is `<phone digits>@residents.pafowa.in`, a reserved domain that is never
-> emailed. The app maps the resident's phone number to that address automatically.
+> Every login address is `<phone digits>@residents.pafowa.in`, a reserved domain that is
+> never emailed. The app maps the phone number to that address automatically.
 
 Optional hardening: turn **Allow new users to sign up** off under
-*Authentication → Sign In / Up*. The app has no sign-up screen and treasurer-created
-logins are written directly by the database function, so switching sign-ups off blocks
-strangers without affecting residents or officers.
+*Authentication → Sign In / Up*. The app has no sign-up screen and all logins are written
+by database functions, so switching sign-ups off blocks strangers without affecting
+anyone.
 
-### 4. Create the first treasurer
+### 4. Create the first treasurer login
 
-1. In *Authentication → Users → Add user*, create the treasurer's email + password.
-   The database trigger creates a matching row in `public.profiles` with role `resident`.
-2. Promote it once in the SQL Editor:
+After the schema is applied, create the treasurer's login in the SQL Editor:
 
 ```sql
-update public.profiles
-set role = 'treasurer'
-where email = 'treasurer@example.com';
+select public.bootstrap_officer_login(
+  'Treasurer Name',
+  '+919840000000',
+  'ChooseAStrongPassword',
+  'treasurer'
+);
 ```
 
-3. Sign in at `/login` on the **Committee** tab. The app shows a QR code and setup key.
-   Scan it with Google Authenticator, Microsoft Authenticator or Authy, then enter the
-   6-digit code. The first authenticator enrolment must be done on a trusted device by the
-   officer themselves.
+The function creates the phone login with that role, or resets the password if the phone
+already has a login. It is deliberately not callable from the app, so only someone with
+access to the SQL Editor can run it.
 
-Create the president and secretary the same way, with roles `president` and `secretary`.
+Hand the treasurer their phone number and password. Once signed in, the treasurer adds
+everyone else from the app:
+
+1. Open **Security → Committee accounts → Add**.
+2. Enter the officer's name, their own phone number, a role (president or secretary) and a
+   password (the app suggests a strong one).
+3. Hand over the phone number and password. They sign in on the same screen as residents
+   and land on the committee dashboard.
+
+To reset any officer password, open **Security → Committee accounts → Reset password**.
+The old password stops working immediately.
 
 ### 5. Onboard residents
 
@@ -134,8 +144,8 @@ Residents do **not** sign themselves up. The treasurer creates each login:
 2. Under **Resident app login**, choose **Create login**.
 3. Enter the resident's name, their phone number and a password (the app suggests a
    strong one). The apartment is linked automatically.
-4. Hand the phone number and password to the resident. They sign in on the **Resident**
-   tab and only see their own unit and payments.
+4. Hand the phone number and password to the resident. They sign in and only see their
+   own unit and payments.
 
 Lost password? **Apartments → Edit → Reset password** sets a new one immediately; the old
 password stops working.
@@ -195,7 +205,7 @@ service-role key to Netlify or to this repository.
 ```
 src/
   components/
-    auth/            MFA gate, locked-account screen
+    auth/            locked-account screen
     layout/          app shell, role-based bottom navigation
     security/        in-app alarm banner
     ui/              Button, Card, Input, Badge, Modal, StatCard, EmptyState...
@@ -233,7 +243,8 @@ precedence is **confirmed → pending → rejected → unpaid**.
 
 ## Manual test checklist
 
-1. Sign in as treasurer, complete authenticator enrolment, and land on the dashboard.
+1. Sign in as treasurer with the phone number and password you issued, and land on the
+   dashboard. Add a president and a secretary from **Security → Committee accounts → Add**.
 2. Add blocks and apartments; set maintenance amounts; link a resident account.
 3. Record a cash payment, confirm it, open the receipt PDF.
 4. Reject a pending payment with a reason; it stays in history.
@@ -243,8 +254,8 @@ precedence is **confirmed → pending → rejected → unpaid**.
 8. Create a resident login from **Apartments → Edit**; sign in as that resident with the
    phone number and password, submit a bank payment with a UTR; the treasurer confirms
    it; the resident downloads the receipt.
-9. Clear only `sessionStorage` and reload: the resident must re-enter their password and
-   each officer must re-enter password + authenticator code.
+9. Clear only `sessionStorage` and reload: every account must re-enter its phone number
+   and password.
 10. Sign in as president or secretary from a new device: a new-device alarm appears for
     all three officers; verify no record/confirm/void controls are shown.
 11. Lock an officer account, confirm the critical alert, then sign in as that officer and
@@ -263,6 +274,8 @@ precedence is **confirmed → pending → rejected → unpaid**.
   best-effort; a failed archive does not invalidate a confirmed receipt.
 - There is no email/SMS notification service; security alarms and announcements appear in
   the app.
-- The treasurer issues and resets resident passwords in person. There is no self-service
-  password reset, which keeps the association free of SMS or email costs.
+- The committee issues and resets every password — the treasurer adds officers from the
+  Security page and residents from the Apartments page. Only the first treasurer login is
+  created in the SQL editor. There is no self-service password reset, which keeps the
+  association free of SMS or email costs.
 - Browsers only. No native app is included.

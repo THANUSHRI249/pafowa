@@ -116,10 +116,6 @@ export function unitLabelForApartment(apt) {
   return apt.display_label || [apt.block, apt.unit_number].filter(Boolean).join('')
 }
 
-export function isEmail(value) {
-  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(value || '').trim())
-}
-
 export function sortByDateDesc(rows, key = 'created_at') {
   return [...rows].sort((a, b) => String(b[key] ?? '').localeCompare(String(a[key] ?? '')))
 }

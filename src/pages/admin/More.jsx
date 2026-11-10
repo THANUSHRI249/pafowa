@@ -192,7 +192,7 @@ export default function More() {
               <div className="min-w-0 flex-1">
                 <p className="truncate text-[1rem] font-semibold text-slate-900">{user?.full_name}</p>
                 <p className="truncate text-sm text-slate-500">
-                  {ROLE_LABELS[user?.role] || 'Officer'} · {user?.email || user?.phone || 'Phone login'}
+                  {ROLE_LABELS[user?.role] || 'Officer'} · {user?.phone || 'Phone login'}
                 </p>
               </div>
               <Pill tone="emerald">

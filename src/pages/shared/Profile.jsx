@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
-import { Building2, Info, LogOut, Mail, Phone, ShieldCheck, UserRound } from 'lucide-react'
+import { Building2, Info, LogOut, Phone, ShieldCheck, UserRound } from 'lucide-react'
 import { useAuth } from '../../context/AuthContext'
 import { useToast } from '../../context/ToastContext'
 import { useAsyncData } from '../../hooks/useAsyncData'
@@ -74,10 +74,8 @@ export default function Profile() {
                     {ROLE_LABELS[user?.role] || 'Resident'}
                   </Pill>
                   <span className="inline-flex items-center gap-1.5 text-sm text-slate-500">
-                    {isResident ? <Phone className="h-4 w-4" /> : <Mail className="h-4 w-4" />}
-                    {isResident
-                      ? user?.phone || 'No phone number'
-                      : user?.email || 'Committee login'}
+                    <Phone className="h-4 w-4" />
+                    {user?.phone || 'No phone number'}
                   </span>
                 </div>
               </div>
@@ -103,19 +101,15 @@ export default function Profile() {
                 onChange={(event) => setForm((current) => ({ ...current, phone: event.target.value }))}
                 placeholder="+91 98400 00000"
                 autoComplete="tel"
-                disabled={isResident}
-                hint={
-                  isResident ? 'This is your login number. Ask the treasurer to change it.' : undefined
-                }
+                disabled
+                hint="This is your login number. Ask the committee to change it."
               />
               <div className="flex flex-wrap items-center gap-3">
                 <Button type="submit" loading={saving}>
                   Save changes
                 </Button>
                 <p className="text-sm text-slate-500">
-                  {isResident
-                    ? 'Your phone number is your login. Ask the treasurer for any change.'
-                    : 'Committee logins are managed by the association.'}
+                  Your phone number is your login. Ask the committee for any change.
                 </p>
               </div>
             </form>
@@ -133,7 +127,7 @@ export default function Profile() {
                   <p className="font-semibold">Not linked yet</p>
                   <p className="mt-1">
                     Ask the treasurer to link your apartment using{' '}
-                    <strong>{user?.phone || user?.email}</strong>.
+                    <strong>{user?.phone}</strong>.
                   </p>
                 </div>
               ) : (
@@ -170,9 +164,8 @@ export default function Profile() {
                 }
               />
               <p className="rounded-2xl bg-grape-50 p-4 text-[0.9rem] leading-relaxed text-grape-600">
-                This account is protected by your password and an authenticator-app code at every new
-                app session. Signing in from a new device raises an alert for the treasurer, president
-                and secretary.
+                This account is protected by your password at every new app session. Signing in
+                from a new device raises an alert for the treasurer, president and secretary.
               </p>
               <Link
                 to="/admin/security"
@@ -202,7 +195,7 @@ export default function Profile() {
               <div className="flex items-center justify-between gap-3">
                 <dt className="text-slate-500">Sign-in</dt>
                 <dd className="font-semibold text-slate-900">
-                  {isResident ? 'Phone number + password' : 'Password + authenticator'}
+                  Phone number + password
                 </dd>
               </div>
               {user?.created_at ? (

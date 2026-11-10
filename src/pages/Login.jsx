@@ -1,17 +1,8 @@
 import { useState } from 'react'
 import { Navigate } from 'react-router-dom'
-import {
-  BriefcaseBusiness,
-  Eye,
-  EyeOff,
-  KeyRound,
-  ShieldCheck,
-  Smartphone,
-  UserRound,
-} from 'lucide-react'
+import { Eye, EyeOff, KeyRound, ShieldCheck, Smartphone } from 'lucide-react'
 import { useAuth } from '../context/AuthContext'
 import { APP_SHORT_TAGLINE, APP_TAGLINE } from '../lib/config'
-import { isEmail } from '../lib/utils'
 import { isValidPhone, normalisePhone } from '../lib/security'
 import Button from '../components/ui/Button'
 import Card from '../components/ui/Card'
@@ -38,11 +29,9 @@ function BrandMark() {
 }
 
 export default function Login() {
-  const { user, notice, signIn, signInResident } = useAuth()
+  const { user, notice, signIn } = useAuth()
 
-  const [tab, setTab] = useState('resident')
   const [phone, setPhone] = useState('')
-  const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [showPassword, setShowPassword] = useState(false)
   const [formError, setFormError] = useState('')
@@ -52,27 +41,13 @@ export default function Login() {
   if (user) return <Navigate to="/" replace />
 
   const noticeText =
-    notice === 'resident'
+    notice === 'session'
       ? 'For your security, sign in again with your phone number and password.'
-      : notice === 'officer'
-        ? 'Your committee session has ended. Sign in again with your password and authenticator code.'
-        : ''
+      : ''
 
-  const clearMessages = () => {
-    setFormError('')
-  }
-
-  const switchTab = (next) => {
-    setTab(next)
-    clearMessages()
-    setErrors({})
-    setPassword('')
-    setShowPassword(false)
-  }
-
-  const handleResident = async (event) => {
+  const handleSubmit = async (event) => {
     event.preventDefault()
-    clearMessages()
+    setFormError('')
     const normalised = normalisePhone(phone)
     const next = {}
     if (!normalised) next.phone = 'Enter your phone number.'
@@ -83,26 +58,7 @@ export default function Login() {
 
     setLoading(true)
     try {
-      await signInResident(normalised, password)
-    } catch (error) {
-      setFormError(error.message || 'Could not sign in.')
-    } finally {
-      setLoading(false)
-    }
-  }
-
-  const handleCommittee = async (event) => {
-    event.preventDefault()
-    clearMessages()
-    const next = {}
-    if (!isEmail(email)) next.email = 'Enter a valid email address.'
-    if (!password) next.password = 'Enter your password.'
-    setErrors(next)
-    if (Object.keys(next).length) return
-
-    setLoading(true)
-    try {
-      await signIn(email, password)
+      await signIn(normalised, password)
     } catch (error) {
       setFormError(error.message || 'Could not sign in.')
     } finally {
@@ -132,157 +88,69 @@ export default function Login() {
             </div>
           ) : null}
 
-          <div className="grid grid-cols-2 gap-1 rounded-2xl bg-slate-100 p-1" role="tablist" aria-label="Sign-in type">
-            {[
-              { key: 'resident', label: 'Resident', icon: UserRound },
-              { key: 'committee', label: 'Committee', icon: BriefcaseBusiness },
-            ].map((item) => (
-              <button
-                key={item.key}
-                type="button"
-                role="tab"
-                aria-selected={tab === item.key}
-                onClick={() => switchTab(item.key)}
-                className={
-                  tab === item.key
-                    ? 'flex min-h-11 items-center justify-center gap-2 rounded-xl bg-white text-[0.95rem] font-semibold text-slate-900 shadow-sm'
-                    : 'flex min-h-11 items-center justify-center gap-2 rounded-xl text-[0.95rem] font-medium text-slate-500 transition hover:text-slate-700'
-                }
-              >
-                <item.icon className="h-4 w-4" />
-                {item.label}
-              </button>
-            ))}
-          </div>
-
-          {tab === 'resident' ? (
-            <form onSubmit={handleResident} className="mt-6 space-y-4" noValidate>
-              <div className="flex items-start gap-3 rounded-2xl bg-brand-50 p-3.5 text-[0.88rem] leading-relaxed text-brand-800">
-                <Smartphone className="mt-0.5 h-5 w-5 shrink-0" />
-                <p>
-                  Use the phone number and password given to you by the treasurer. Forgotten your
-                  password? Ask the treasurer to reset it.
-                </p>
-              </div>
-              <Input
-                label="Phone number"
-                name="phone"
-                type="tel"
-                inputMode="tel"
-                autoComplete="tel"
-                placeholder="+91 98400 00000"
-                value={phone}
-                onChange={(event) => {
-                  setPhone(event.target.value)
-                  setErrors((current) => ({ ...current, phone: undefined }))
-                  setFormError('')
-                }}
-                error={errors.phone}
-                autoFocus
-              />
-              <div className="relative">
-                <Input
-                  label="Password"
-                  name="password"
-                  type={showPassword ? 'text' : 'password'}
-                  autoComplete="current-password"
-                  placeholder="Enter the password from the treasurer"
-                  value={password}
-                  onChange={(event) => {
-                    setPassword(event.target.value)
-                    setErrors((current) => ({ ...current, password: undefined }))
-                    setFormError('')
-                  }}
-                  error={errors.password}
-                  className="pr-14"
-                />
-                <button
-                  type="button"
-                  onClick={() => setShowPassword((value) => !value)}
-                  className="absolute bottom-0 right-0 flex h-14 w-14 items-center justify-center rounded-2xl text-slate-400 hover:text-slate-600"
-                  aria-label={showPassword ? 'Hide password' : 'Show password'}
-                >
-                  {showPassword ? <EyeOff className="h-5 w-5" /> : <Eye className="h-5 w-5" />}
-                </button>
-              </div>
-              {formError ? (
-                <div className="rounded-2xl border border-rose-100 bg-rose-50 px-4 py-3 text-[0.92rem] text-rose-800" role="alert">
-                  {formError}
-                </div>
-              ) : null}
-              <Button type="submit" fullWidth loading={loading} icon={KeyRound}>
-                Open app
-              </Button>
-            </form>
-          ) : (
-            <form onSubmit={handleCommittee} className="mt-6 space-y-4" noValidate>
-              <div className="flex items-start gap-3 rounded-2xl bg-grape-50 p-3.5 text-[0.88rem] leading-relaxed text-grape-600">
-                <KeyRound className="mt-0.5 h-5 w-5 shrink-0" />
-                <p>
-                  Treasurer, president and secretary only. After your password you must enter the
-                  6-digit code from your authenticator app.
-                </p>
-              </div>
-              <Input
-                label="Email address"
-                name="email"
-                type="email"
-                inputMode="email"
-                autoComplete="email"
-                placeholder="you@example.com"
-                value={email}
-                onChange={(event) => {
-                  setEmail(event.target.value)
-                  setErrors((current) => ({ ...current, email: undefined }))
-                  setFormError('')
-                }}
-                error={errors.email}
-                autoFocus
-              />
-              <div className="relative">
-                <Input
-                  label="Password"
-                  name="password"
-                  type={showPassword ? 'text' : 'password'}
-                  autoComplete="current-password"
-                  placeholder="Enter your password"
-                  value={password}
-                  onChange={(event) => {
-                    setPassword(event.target.value)
-                    setErrors((current) => ({ ...current, password: undefined }))
-                    setFormError('')
-                  }}
-                  error={errors.password}
-                  className="pr-14"
-                />
-                <button
-                  type="button"
-                  onClick={() => setShowPassword((value) => !value)}
-                  className="absolute bottom-0 right-0 flex h-14 w-14 items-center justify-center rounded-2xl text-slate-400 hover:text-slate-600"
-                  aria-label={showPassword ? 'Hide password' : 'Show password'}
-                >
-                  {showPassword ? <EyeOff className="h-5 w-5" /> : <Eye className="h-5 w-5" />}
-                </button>
-              </div>
-              {formError ? (
-                <div className="rounded-2xl border border-rose-100 bg-rose-50 px-4 py-3 text-[0.92rem] text-rose-800" role="alert">
-                  {formError}
-                </div>
-              ) : null}
-              <Button type="submit" fullWidth loading={loading} icon={ShieldCheck}>
-                Continue to verification
-              </Button>
-              <p className="text-center text-[0.82rem] leading-relaxed text-slate-500">
-                Committee accounts are created by the association. Ask the treasurer if you need access.
+          <form onSubmit={handleSubmit} className="space-y-4" noValidate>
+            <div className="flex items-start gap-3 rounded-2xl bg-brand-50 p-3.5 text-[0.88rem] leading-relaxed text-brand-800">
+              <Smartphone className="mt-0.5 h-5 w-5 shrink-0" />
+              <p>
+                Sign in with your phone number and the password given to you by the committee.
+                Forgotten your password? Ask the treasurer to reset it.
               </p>
-            </form>
-          )}
-
+            </div>
+            <Input
+              label="Phone number"
+              name="phone"
+              type="tel"
+              inputMode="tel"
+              autoComplete="tel"
+              placeholder="+91 98400 00000"
+              value={phone}
+              onChange={(event) => {
+                setPhone(event.target.value)
+                setErrors((current) => ({ ...current, phone: undefined }))
+                setFormError('')
+              }}
+              error={errors.phone}
+              autoFocus
+            />
+            <div className="relative">
+              <Input
+                label="Password"
+                name="password"
+                type={showPassword ? 'text' : 'password'}
+                autoComplete="current-password"
+                placeholder="Enter the password from the committee"
+                value={password}
+                onChange={(event) => {
+                  setPassword(event.target.value)
+                  setErrors((current) => ({ ...current, password: undefined }))
+                  setFormError('')
+                }}
+                error={errors.password}
+                className="pr-14"
+              />
+              <button
+                type="button"
+                onClick={() => setShowPassword((value) => !value)}
+                className="absolute bottom-0 right-0 flex h-14 w-14 items-center justify-center rounded-2xl text-slate-400 hover:text-slate-600"
+                aria-label={showPassword ? 'Hide password' : 'Show password'}
+              >
+                {showPassword ? <EyeOff className="h-5 w-5" /> : <Eye className="h-5 w-5" />}
+              </button>
+            </div>
+            {formError ? (
+              <div className="rounded-2xl border border-rose-100 bg-rose-50 px-4 py-3 text-[0.92rem] text-rose-800" role="alert">
+                {formError}
+              </div>
+            ) : null}
+            <Button type="submit" fullWidth loading={loading} icon={KeyRound}>
+              Open app
+            </Button>
+          </form>
         </Card>
 
         <p className="mt-5 flex items-center justify-center gap-2 text-center text-xs leading-relaxed text-slate-500">
           <ShieldCheck className="h-4 w-4 shrink-0 text-emerald-600" />
-          Passwords for residents · authenticator codes for committee accounts
+          One login for everyone · phone number + password issued by the committee
         </p>
       </div>
     </div>

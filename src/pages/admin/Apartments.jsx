@@ -16,7 +16,7 @@ import { useToast } from '../../context/ToastContext'
 import { useAsyncData } from '../../hooks/useAsyncData'
 import { repo } from '../../lib/data'
 import { OCCUPANCY_OPTIONS } from '../../lib/config'
-import { isValidPhone, normalisePhone } from '../../lib/security'
+import { isValidPhone, normalisePhone, suggestPassword } from '../../lib/security'
 import { cn, formatDate, money } from '../../lib/utils'
 import Button from '../../components/ui/Button'
 import Card from '../../components/ui/Card'
@@ -42,12 +42,6 @@ const OCCUPANCY_LABELS = Object.fromEntries(OCCUPANCY_OPTIONS.map((item) => [ite
 
 function labelOf(apartment) {
   return apartment.display_label || `${apartment.block}${apartment.unit_number}`
-}
-
-function suggestPassword() {
-  const random = new Uint32Array(1)
-  crypto.getRandomValues(random)
-  return `Pargavi@${String(random[0] % 10000).padStart(4, '0')}`
 }
 
 export default function Apartments() {
@@ -233,7 +227,7 @@ export default function Apartments() {
         toast.success(`Login created for ${normalised}. Give the password to the resident.`)
         setAptModal({ open: false, apartment: null })
       } else {
-        await repo.profiles.resetResidentPassword(loginModal.resident.id, loginForm.password)
+        await repo.profiles.resetPassword(loginModal.resident.id, loginForm.password)
         toast.success('Password changed. Give the new password to the resident.')
       }
       setLoginModal({ open: false, mode: 'create', resident: null })
@@ -873,7 +867,7 @@ export default function Apartments() {
         title={loginModal.mode === 'create' ? 'Create resident login' : 'Reset resident password'}
         description={
           loginModal.mode === 'create'
-            ? 'The resident signs in on the Resident tab with this phone number and password.'
+            ? 'The resident signs in with this phone number and password, just like the committee.'
             : 'Choose a new password and give it to the resident. Their old password stops working immediately.'
         }
         size="md"

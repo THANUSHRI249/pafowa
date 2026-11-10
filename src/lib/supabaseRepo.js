@@ -3,7 +3,7 @@ import { paymentInsertFromPayload } from './billing'
 import { OFFICER_ROLES } from './config'
 import {
   RESIDENT_LOGIN_DOMAIN,
-  clearVerifiedSessions,
+  clearSession,
   isValidPhone,
   normalisePhone,
   residentLoginEmail,
@@ -67,15 +67,7 @@ export const supabaseRepo = {
       if (!data?.session) return null
       return fetchProfile(data.session.user.id)
     },
-    async signIn(email, password) {
-      const { data, error } = await supabase.auth.signInWithPassword({
-        email: String(email || '').trim(),
-        password,
-      })
-      if (error) throw new Error(error.message || 'Could not sign in.')
-      return fetchProfile(data.user.id)
-    },
-    async signInResident(phone, password) {
+    async signIn(phone, password) {
       const normalised = normalisePhone(phone)
       if (!isValidPhone(normalised)) throw new Error('Enter a valid phone number.')
       if (!password) throw new Error('Enter your password.')
@@ -86,69 +78,12 @@ export const supabaseRepo = {
       if (error) {
         if (/invalid login credentials|invalid email or password/i.test(error.message || '')) {
           throw new Error(
-            'That phone number and password do not match. Ask the treasurer to reset your password.',
+            'That phone number and password do not match. Ask the committee to reset your password.',
           )
         }
         throw new Error(error.message || 'Could not sign in.')
       }
       return fetchProfile(data.user.id)
-    },
-    async getMfaState() {
-      const [{ data: level }, { data: factors }] = await Promise.all([
-        supabase.auth.mfa.getAuthenticatorAssuranceLevel(),
-        supabase.auth.mfa.listFactors(),
-      ])
-      const totp = factors?.totp || []
-      const verified = totp.find((factor) => factor.status === 'verified')
-      return {
-        currentLevel: level?.currentLevel || 'aal1',
-        nextLevel: level?.nextLevel || 'aal1',
-        hasVerifiedFactor: Boolean(verified),
-        factorId: verified?.id || null,
-      }
-    },
-    async enrollMfa() {
-      // Remove any half-finished factor from a cancelled setup before enrolling.
-      const { data: factors } = await supabase.auth.mfa.listFactors()
-      const stale = (factors?.totp || []).filter((factor) => factor.status !== 'verified')
-      await Promise.all(
-        stale.map((factor) =>
-          supabase.auth.mfa.unenroll({ factorId: factor.id }).catch(() => null),
-        ),
-      )
-
-      const { data, error } = await supabase.auth.mfa.enroll({
-        factorType: 'totp',
-        friendlyName: `PAFOWA ${new Date().toISOString().slice(0, 10)}`,
-      })
-      if (error) throw new Error(error.message || 'Could not start authenticator setup.')
-      return {
-        factorId: data.id,
-        qrCode: data.totp?.qr_code || '',
-        secret: data.totp?.secret || '',
-        uri: data.totp?.uri || '',
-      }
-    },
-    async verifyMfa(factorId, code) {
-      const { data: challenge, error: challengeError } = await supabase.auth.mfa.challenge({
-        factorId,
-      })
-      if (challengeError) {
-        throw new Error(challengeError.message || 'Could not start the authenticator check.')
-      }
-      const { error } = await supabase.auth.mfa.verify({
-        factorId,
-        challengeId: challenge.id,
-        code: String(code || '').trim(),
-      })
-      if (error) throw new Error(error.message || 'That authenticator code is not correct.')
-      const { data } = await supabase.auth.getUser()
-      return fetchProfile(data.user.id)
-    },
-    async cancelMfa(factorId) {
-      if (!factorId) return null
-      await supabase.auth.mfa.unenroll({ factorId }).catch(() => null)
-      return null
     },
     async registerLogin({ deviceHash = '', platform = '', userAgent = '' } = {}) {
       const { data, error } = await supabase.rpc('register_login', {
@@ -161,7 +96,7 @@ export const supabaseRepo = {
     },
     async signOut() {
       await supabase.auth.signOut()
-      clearVerifiedSessions()
+      clearSession()
     },
     onChange(callback) {
       const { data } = supabase.auth.onAuthStateChange((event) => {
@@ -206,8 +141,18 @@ export const supabaseRepo = {
       if (error) throw new Error(error.message || 'Could not create the resident login.')
       return data
     },
-    async resetResidentPassword(profileId, password) {
-      const { error } = await supabase.rpc('admin_reset_resident_password', {
+    async createOfficerLogin({ fullName, phone, password, role }) {
+      const { data, error } = await supabase.rpc('admin_create_officer_login', {
+        p_full_name: String(fullName || '').trim(),
+        p_phone: String(phone || '').trim(),
+        p_password: password,
+        p_role: role,
+      })
+      if (error) throw new Error(error.message || 'Could not create the committee login.')
+      return data
+    },
+    async resetPassword(profileId, password) {
+      const { error } = await supabase.rpc('admin_reset_password', {
         p_profile_id: profileId,
         p_password: password,
       })

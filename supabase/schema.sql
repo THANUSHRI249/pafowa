@@ -13,9 +13,9 @@
 --     treasurer, and can read/write only their own apartment's payment records.
 --     No SMS provider is involved. The phone maps to a reserved
 --     `<digits>@residents.pafowa.in` auth account; nothing is ever emailed there.
---   * Committee officers are treasurer, president and secretary. All three must
---     present an authenticator-app code (AAL2) before the RLS helpers below let
---     them read anything, so a stolen password alone cannot touch the data.
+--   * Committee officers are treasurer, president and secretary. They use the
+--     same phone-number login as residents. A sign-in from a new device raises
+--     an alarm, and any officer can lock an account instantly.
 --   * The treasurer can record/confirm/edit. The president and secretary have
 --     read-only oversight.
 --   * Sign-ins from a new device raise an in-app security alert for every officer.
@@ -34,9 +34,8 @@ create extension if not exists pgcrypto with schema extensions;
 
 create table if not exists public.profiles (
   id uuid primary key references auth.users(id) on delete cascade,
-  -- Committee logins use a real email. Resident logins use a phone number, and
-  -- their reserved @residents.pafowa.in address is deliberately not stored here,
-  -- so email stays unique and meaningful.
+  -- Every login is phone-based. Supabase stores a reserved address on the
+  -- @residents.pafowa.in domain instead, which is deliberately not repeated here.
   email text unique,
   full_name text not null default '',
   phone text not null default '',
@@ -291,8 +290,6 @@ begin
 end;
 $$;
 
--- Supabase puts the assurance level in the access token. Officers must have
--- completed the TOTP challenge, otherwise their token says 'aal1'.
 -- Normalises a phone number to +91XXXXXXXXXX. Returns null when the input
 -- cannot be a phone number. Mirrors normalisePhone() in src/lib/security.js.
 create or replace function public.normalise_phone(p_phone text)
@@ -331,16 +328,8 @@ as $$
   end;
 $$;
 
-create or replace function public.jwt_is_aal2()
-returns boolean
-language sql
-stable
-as $$
-  select coalesce(auth.jwt() ->> 'aal', 'aal1') = 'aal2';
-$$;
-
--- Role check that ignores the lock flag and the second factor. Used only by the
--- security RPCs so a locked treasurer can still unlock their own account.
+-- Role check that ignores the lock flag. Used only by the security RPCs so a
+-- locked treasurer can still unlock their own account.
 create or replace function public.officer_session()
 returns boolean
 language sql
@@ -353,12 +342,11 @@ as $$
     from public.profiles p
     where p.id = auth.uid()
       and p.role in ('treasurer', 'president', 'secretary')
-      and public.jwt_is_aal2()
   );
 $$;
 
--- Any unlocked committee officer with a second factor. This is the read gate
--- used by most policies: president and secretary get full read access.
+-- Any unlocked committee officer. This is the read gate used by most policies:
+-- president and secretary get full read access.
 create or replace function public.is_officer()
 returns boolean
 language sql
@@ -372,7 +360,6 @@ as $$
     where p.id = auth.uid()
       and p.role in ('treasurer', 'president', 'secretary')
       and not p.security_locked
-      and public.jwt_is_aal2()
   );
 $$;
 
@@ -390,7 +377,6 @@ as $$
     where p.id = auth.uid()
       and p.role = 'treasurer'
       and not p.security_locked
-      and public.jwt_is_aal2()
   );
 $$;
 
@@ -474,7 +460,7 @@ begin
       when coalesce(new.email, '') like '%@residents.pafowa.in' then null
       else nullif(coalesce(new.email, ''), '')
     end,
-    coalesce(new.raw_user_meta_data ->> 'full_name', 'Resident'),
+    coalesce(new.raw_user_meta_data ->> 'full_name', 'Member'),
     coalesce(nullif(new.raw_user_meta_data ->> 'phone', ''), new.phone, ''),
     'resident'
   )
@@ -488,8 +474,9 @@ create trigger on_auth_user_created
   after insert on auth.users
   for each row execute function public.handle_new_user();
 
--- Residents may edit their name and phone, but never their role or login email.
--- The lock flag and login timestamp are written only by the security RPCs.
+-- Everyone may edit their name, but never their role, login email or login
+-- phone. The phone is the sign-in identifier for every account. The lock flag
+-- and login timestamp are written only by the security RPCs.
 create or replace function public.guard_profile_update()
 returns trigger
 language plpgsql
@@ -508,9 +495,10 @@ begin
     if new.email is distinct from old.email then
       raise exception 'Ask the treasurer to change your login email.';
     end if;
-    if old.role = 'resident' and new.phone is distinct from old.phone then
-      raise exception 'Ask the treasurer to change your login phone number.';
-    end if;
+  end if;
+
+  if new.phone is distinct from old.phone then
+    raise exception 'Login phone numbers are changed by the committee.';
   end if;
 
   if (
@@ -1265,7 +1253,8 @@ begin
 end;
 $$;
 
-create or replace function public.admin_reset_resident_password(
+-- Treasurer-only. Works for resident and committee logins alike.
+create or replace function public.admin_reset_password(
   p_profile_id uuid,
   p_password text
 )
@@ -1278,7 +1267,7 @@ declare
   v_profile public.profiles;
 begin
   if not public.is_treasurer() then
-    raise exception 'Only the treasurer can reset resident passwords.';
+    raise exception 'Only the treasurer can reset passwords.';
   end if;
 
   if length(coalesce(p_password, '')) < 8 then
@@ -1286,8 +1275,8 @@ begin
   end if;
 
   select * into v_profile from public.profiles where id = p_profile_id;
-  if not found or v_profile.role <> 'resident' then
-    raise exception 'Only resident logins can be reset here.';
+  if not found then
+    raise exception 'That login no longer exists.';
   end if;
 
   update auth.users
@@ -1296,7 +1285,7 @@ begin
   where id = p_profile_id;
 
   if not found then
-    raise exception 'That resident login no longer exists.';
+    raise exception 'That login no longer exists.';
   end if;
 
   insert into public.security_events (actor_id, event_type, detail)
@@ -1309,13 +1298,240 @@ begin
 end;
 $$;
 
+-- Remove the pre-publish resident-only helper so re-runs stay clean.
+drop function if exists public.admin_reset_resident_password(uuid, text);
+
+-- Treasurer-only. Creates a phone login for a committee member. The first
+-- treasurer is bootstrapped from the SQL editor (see below); after that every
+-- committee login is created and reset from the Security page.
+create or replace function public.admin_create_officer_login(
+  p_full_name text,
+  p_phone text,
+  p_password text,
+  p_role text
+)
+returns uuid
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_phone text;
+  v_login_email text;
+  v_name text;
+  v_user_id uuid := gen_random_uuid();
+begin
+  if not public.is_treasurer() then
+    raise exception 'Only the treasurer can create committee logins.';
+  end if;
+
+  if coalesce(p_role, '') not in ('treasurer', 'president', 'secretary') then
+    raise exception 'Choose the role treasurer, president or secretary.';
+  end if;
+
+  v_phone := public.normalise_phone(p_phone);
+  if v_phone is null then
+    raise exception 'Enter a valid phone number.';
+  end if;
+  if length(coalesce(p_password, '')) < 8 then
+    raise exception 'Use a password with at least 8 characters.';
+  end if;
+
+  v_login_email := public.resident_login_email(v_phone);
+  v_name := coalesce(nullif(trim(p_full_name), ''), 'Committee member');
+
+  if exists (select 1 from public.profiles where phone = v_phone) then
+    raise exception 'A login already exists for this phone number. Reset its password instead.';
+  end if;
+  if exists (select 1 from auth.users where lower(email) = v_login_email) then
+    raise exception 'A login already exists for this phone number.';
+  end if;
+
+  insert into auth.users (
+    instance_id, id, aud, role, email, encrypted_password,
+    email_confirmed_at, created_at, updated_at,
+    raw_app_meta_data, raw_user_meta_data,
+    confirmation_token, recovery_token, email_change_token_new, email_change
+  ) values (
+    '00000000-0000-0000-0000-000000000000',
+    v_user_id,
+    'authenticated',
+    'authenticated',
+    v_login_email,
+    extensions.crypt(p_password, extensions.gen_salt('bf', 10)),
+    now(), now(), now(),
+    jsonb_build_object('provider', 'email', 'providers', jsonb_build_array('email')),
+    jsonb_build_object('full_name', v_name, 'phone', v_phone),
+    '', '', '', ''
+  );
+
+  -- Password sign-in only needs the auth.users row. Identity layouts differ
+  -- between auth versions, so a failed identity insert must not block the login.
+  begin
+    insert into auth.identities (
+      provider_id, user_id, identity_data, provider, last_sign_in_at, created_at, updated_at
+    ) values (
+      v_login_email,
+      v_user_id,
+      jsonb_build_object(
+        'sub', v_user_id::text,
+        'email', v_login_email,
+        'email_verified', true,
+        'phone_verified', false
+      ),
+      'email', now(), now(), now()
+    );
+  exception when others then
+    null;
+  end;
+
+  update public.profiles
+  set role = p_role,
+      full_name = v_name,
+      phone = v_phone,
+      updated_at = now()
+  where id = v_user_id;
+
+  insert into public.security_events (actor_id, event_type, detail)
+  values (
+    auth.uid(),
+    'login_created',
+    'Created ' || p_role || ' login for ' || v_name || ' (' || v_phone || ')'
+  );
+
+  return v_user_id;
+end;
+$$;
+
+-- -----------------------------------------------------------------------------
+-- Treasurer bootstrap
+-- -----------------------------------------------------------------------------
+-- Run this once, for the first treasurer only, in the Supabase SQL editor:
+--
+--   select public.bootstrap_officer_login(
+--     'Asha Rao', '+919840000000', 'StrongPass123', 'treasurer');
+--
+-- It creates the phone login with that role, or resets the password if the
+-- account already exists. The treasurer then creates the president, secretary
+-- and resident logins from the app. The SQL editor runs as the project owner,
+-- and the execute privilege is revoked from PUBLIC and never granted to
+-- authenticated, so app users cannot call it.
+create or replace function public.bootstrap_officer_login(
+  p_full_name text,
+  p_phone text,
+  p_password text,
+  p_role text
+)
+returns uuid
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_phone text;
+  v_login_email text;
+  v_name text;
+  v_user_id uuid;
+begin
+  if coalesce(p_role, '') not in ('treasurer', 'president', 'secretary') then
+    raise exception 'Choose the role treasurer, president or secretary.';
+  end if;
+
+  v_phone := public.normalise_phone(p_phone);
+  if v_phone is null then
+    raise exception 'Enter a valid phone number.';
+  end if;
+  if length(coalesce(p_password, '')) < 8 then
+    raise exception 'Use a password with at least 8 characters.';
+  end if;
+
+  v_login_email := public.resident_login_email(v_phone);
+  v_name := coalesce(nullif(trim(p_full_name), ''), 'Committee member');
+
+  select id into v_user_id
+  from public.profiles
+  where phone = v_phone
+  order by created_at
+  limit 1;
+  if v_user_id is null then
+    select id into v_user_id from auth.users where lower(email) = v_login_email;
+  end if;
+
+  if v_user_id is not null then
+    update auth.users
+    set encrypted_password = extensions.crypt(p_password, extensions.gen_salt('bf', 10)),
+        email_confirmed_at = coalesce(email_confirmed_at, now()),
+        updated_at = now()
+    where id = v_user_id;
+
+    update public.profiles
+    set role = p_role,
+        full_name = v_name,
+        phone = v_phone,
+        updated_at = now()
+    where id = v_user_id;
+
+    return v_user_id;
+  end if;
+
+  v_user_id := gen_random_uuid();
+
+  insert into auth.users (
+    instance_id, id, aud, role, email, encrypted_password,
+    email_confirmed_at, created_at, updated_at,
+    raw_app_meta_data, raw_user_meta_data,
+    confirmation_token, recovery_token, email_change_token_new, email_change
+  ) values (
+    '00000000-0000-0000-0000-000000000000',
+    v_user_id,
+    'authenticated',
+    'authenticated',
+    v_login_email,
+    extensions.crypt(p_password, extensions.gen_salt('bf', 10)),
+    now(), now(), now(),
+    jsonb_build_object('provider', 'email', 'providers', jsonb_build_array('email')),
+    jsonb_build_object('full_name', v_name, 'phone', v_phone),
+    '', '', '', ''
+  );
+
+  -- Password sign-in only needs the auth.users row. Identity layouts differ
+  -- between auth versions, so a failed identity insert must not block the login.
+  begin
+    insert into auth.identities (
+      provider_id, user_id, identity_data, provider, last_sign_in_at, created_at, updated_at
+    ) values (
+      v_login_email,
+      v_user_id,
+      jsonb_build_object(
+        'sub', v_user_id::text,
+        'email', v_login_email,
+        'email_verified', true,
+        'phone_verified', false
+      ),
+      'email', now(), now(), now()
+    );
+  exception when others then
+    null;
+  end;
+
+  update public.profiles
+  set role = p_role,
+      full_name = v_name,
+      phone = v_phone,
+      updated_at = now()
+  where id = v_user_id;
+
+  return v_user_id;
+end;
+$$;
+
 -- -----------------------------------------------------------------------------
 -- Login security RPCs
 -- -----------------------------------------------------------------------------
 
--- Called once per app session after authentication (and after the TOTP challenge
--- for officers). Records the device, updates last_login_at and raises an alarm
--- the first time an officer signs in from an unknown device.
+-- Called once per app session after authentication. Records the device,
+-- updates last_login_at and raises an alarm the first time an officer signs in
+-- from an unknown device.
 create or replace function public.register_login(
   p_device_hash text,
   p_platform text default '',
@@ -1351,10 +1567,6 @@ begin
   end if;
 
   v_is_officer := v_profile.role in ('treasurer', 'president', 'secretary');
-
-  if v_is_officer and not public.jwt_is_aal2() then
-    raise exception 'Two-factor authentication is required for committee accounts.';
-  end if;
 
   perform set_config('pafowa.security_rpc', 'on', true);
 
@@ -1497,8 +1709,8 @@ begin
 end;
 $$;
 
--- The treasurer can unlock any officer, including their own account after a
--- second-factor sign-in. Other officers need the treasurer.
+-- The treasurer can unlock any officer, including their own account. Other
+-- officers need the treasurer.
 create or replace function public.unlock_officer(p_officer_id uuid)
 returns void
 language plpgsql
@@ -1510,7 +1722,7 @@ declare
   v_caller public.profiles;
 begin
   if not public.officer_session() then
-    raise exception 'Sign in with two-factor authentication first.';
+    raise exception 'Sign in as a committee member first.';
   end if;
 
   select * into v_caller from public.profiles where id = auth.uid();
@@ -1552,7 +1764,6 @@ $$;
 revoke all on function public.set_updated_at() from public;
 revoke all on function public.normalise_phone(text) from public;
 revoke all on function public.resident_login_email(text) from public;
-revoke all on function public.jwt_is_aal2() from public;
 revoke all on function public.officer_session() from public;
 revoke all on function public.is_officer() from public;
 revoke all on function public.is_treasurer() from public;
@@ -1566,7 +1777,9 @@ revoke all on function public.guard_payment_update() from public;
 revoke all on function public.guard_combined_member() from public;
 revoke all on function public.next_receipt_number(integer) from public;
 revoke all on function public.admin_create_resident_login(text, text, text, uuid) from public;
-revoke all on function public.admin_reset_resident_password(uuid, text) from public;
+revoke all on function public.admin_create_officer_login(text, text, text, text) from public;
+revoke all on function public.admin_reset_password(uuid, text) from public;
+revoke all on function public.bootstrap_officer_login(text, text, text, text) from public;
 revoke all on function public.register_login(text, text, text) from public;
 revoke all on function public.acknowledge_alert(uuid) from public;
 revoke all on function public.lock_officer(uuid, text) from public;
@@ -1583,7 +1796,8 @@ grant execute on function public.create_combined_unit(text, numeric, uuid[], tex
 grant execute on function public.update_combined_unit(uuid, text, numeric, uuid[], text) to authenticated;
 grant execute on function public.separate_combined_unit(uuid) to authenticated;
 grant execute on function public.admin_create_resident_login(text, text, text, uuid) to authenticated;
-grant execute on function public.admin_reset_resident_password(uuid, text) to authenticated;
+grant execute on function public.admin_create_officer_login(text, text, text, text) to authenticated;
+grant execute on function public.admin_reset_password(uuid, text) to authenticated;
 grant execute on function public.register_login(text, text, text) to authenticated;
 grant execute on function public.acknowledge_alert(uuid) to authenticated;
 grant execute on function public.lock_officer(uuid, text) to authenticated;

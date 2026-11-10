@@ -1,10 +1,9 @@
 import { OFFICER_ROLES } from './config'
 
-const RESIDENT_SESSION_KEY = 'pafowa.resident.session'
-const MFA_SESSION_KEY = 'pafowa.mfa.session'
+const SESSION_KEY = 'pafowa.session'
 
-// Residents sign in with their phone number. Supabase Auth only knows email
-// accounts, so each resident phone maps to one reserved address on this domain.
+// Every account signs in with a phone number. Supabase Auth only knows email
+// accounts, so each phone maps to one reserved address on this domain.
 // Nothing is ever sent to it; it is only the account key.
 export const RESIDENT_LOGIN_DOMAIN = 'residents.pafowa.in'
 const SECURITY_EVENT = 'pafowa:security-changed'
@@ -47,42 +46,25 @@ export function residentLoginEmail(phone) {
   return digits ? `${digits}@${RESIDENT_LOGIN_DOMAIN}` : ''
 }
 
-export function markResidentSession(userId) {
+export function markSession(userId) {
   try {
-    sessionStorage.setItem(RESIDENT_SESSION_KEY, userId)
+    sessionStorage.setItem(SESSION_KEY, userId)
   } catch {
     // sessionStorage can be unavailable in hardened browsers.
   }
 }
 
-export function hasResidentSession(userId) {
+export function hasSession(userId) {
   try {
-    return sessionStorage.getItem(RESIDENT_SESSION_KEY) === userId
+    return sessionStorage.getItem(SESSION_KEY) === userId
   } catch {
     return false
   }
 }
 
-export function markMfaSession(userId) {
+export function clearSession() {
   try {
-    sessionStorage.setItem(MFA_SESSION_KEY, userId)
-  } catch {
-    // ignore
-  }
-}
-
-export function hasMfaSession(userId) {
-  try {
-    return sessionStorage.getItem(MFA_SESSION_KEY) === userId
-  } catch {
-    return false
-  }
-}
-
-export function clearVerifiedSessions() {
-  try {
-    sessionStorage.removeItem(RESIDENT_SESSION_KEY)
-    sessionStorage.removeItem(MFA_SESSION_KEY)
+    sessionStorage.removeItem(SESSION_KEY)
   } catch {
     // ignore
   }
@@ -148,4 +130,10 @@ export function deviceLabel() {
   const platform = navigator.userAgentData?.platform || navigator.platform || 'Browser'
   const mobile = /Mobi|Android/i.test(navigator.userAgent)
   return `${platform}${mobile ? ' · Mobile' : ' · Desktop'}`
+}
+
+export function suggestPassword() {
+  const random = new Uint32Array(1)
+  crypto.getRandomValues(random)
+  return `Pargavi@${String(random[0] % 10000).padStart(4, '0')}`
 }

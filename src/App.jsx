@@ -2,7 +2,6 @@ import { useEffect } from 'react'
 import { Navigate, Outlet, Route, Routes, useLocation } from 'react-router-dom'
 import { useAuth } from './context/AuthContext'
 import AppShell from './components/layout/AppShell'
-import MfaGate from './components/auth/MfaGate'
 import LockedScreen from './components/auth/LockedScreen'
 import Login from './pages/Login'
 import ResidentHome from './pages/resident/Home'
@@ -66,7 +65,6 @@ function AuthGate({ children }) {
 
   if (status === 'loading') return <StartupScreen />
   if (status === 'locked') return <LockedScreen />
-  if (status === 'mfa-challenge' || status === 'mfa-enroll') return <MfaGate />
   return children
 }
 

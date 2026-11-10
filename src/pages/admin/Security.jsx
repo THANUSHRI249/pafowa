@@ -9,19 +9,20 @@ import {
   ShieldAlert,
   ShieldCheck,
   Unlock,
+  UserPlus,
   Users,
 } from 'lucide-react'
 import { useAuth } from '../../context/AuthContext'
 import { useToast } from '../../context/ToastContext'
 import { useSecurityOverview } from '../../hooks/useSecurityOverview'
 import { repo } from '../../lib/data'
-import { notifySecurityChanged } from '../../lib/security'
+import { isValidPhone, normalisePhone, notifySecurityChanged, suggestPassword } from '../../lib/security'
 import { ROLE_LABELS } from '../../lib/config'
 import { formatDateTime } from '../../lib/utils'
 import Button from '../../components/ui/Button'
 import Card, { CardHeader } from '../../components/ui/Card'
 import Modal from '../../components/ui/Modal'
-import { TextArea } from '../../components/ui/Input'
+import { Input, Select, TextArea } from '../../components/ui/Input'
 import { Avatar, InlineError, PageHeader, PageSkeleton } from '../../components/ui/Misc'
 import { Pill } from '../../components/ui/Badge'
 import EmptyState from '../../components/ui/EmptyState'
@@ -32,10 +33,16 @@ const EVENT_LABELS = {
   locked: 'Account locked',
   unlocked: 'Account unlocked',
   alert_acknowledged: 'Alert acknowledged',
-  login_created: 'Resident login created',
-  password_reset: 'Resident password changed',
+  login_created: 'Login created',
+  password_reset: 'Password changed',
   security_note: 'Security note',
 }
+
+const OFFICER_ROLE_OPTIONS = [
+  { value: 'president', label: 'President' },
+  { value: 'secretary', label: 'Secretary' },
+  { value: 'treasurer', label: 'Treasurer' },
+]
 
 export default function Security() {
   const { user, isTreasurer, signOut } = useAuth()
@@ -46,6 +53,11 @@ export default function Security() {
   const [lockReason, setLockReason] = useState('')
   const [lockBusy, setLockBusy] = useState(false)
   const [busyId, setBusyId] = useState('')
+
+  const [loginModal, setLoginModal] = useState({ open: false, mode: 'create', officer: null })
+  const [loginForm, setLoginForm] = useState({ full_name: '', phone: '', role: 'secretary', password: '' })
+  const [loginErrors, setLoginErrors] = useState({})
+  const [loginSaving, setLoginSaving] = useState(false)
 
   if (loading && !data) return <PageSkeleton />
   if (error && !data) return <InlineError message={error.message} onRetry={reload} />
@@ -105,11 +117,67 @@ export default function Security() {
     }
   }
 
+  const openAddOfficer = () => {
+    setLoginForm({ full_name: '', phone: '', role: 'secretary', password: suggestPassword() })
+    setLoginErrors({})
+    setLoginModal({ open: true, mode: 'create', officer: null })
+  }
+
+  const openResetOfficer = (officer) => {
+    setLoginForm({
+      full_name: officer.full_name || '',
+      phone: officer.phone || '',
+      role: officer.role,
+      password: suggestPassword(),
+    })
+    setLoginErrors({})
+    setLoginModal({ open: true, mode: 'reset', officer })
+  }
+
+  const saveOfficerLogin = async (event) => {
+    event.preventDefault()
+    const next = {}
+    const normalised = normalisePhone(loginForm.phone)
+    if (loginModal.mode === 'create') {
+      if (!loginForm.full_name.trim()) next.full_name = 'Enter the officer name.'
+      if (!isValidPhone(normalised)) next.phone = 'Enter a complete phone number.'
+      if (!OFFICER_ROLE_OPTIONS.some((option) => option.value === loginForm.role)) {
+        next.role = 'Choose a role.'
+      }
+    }
+    if (loginForm.password.trim().length < 8) next.password = 'Use at least 8 characters.'
+    setLoginErrors(next)
+    if (Object.keys(next).length) return
+
+    setLoginSaving(true)
+    try {
+      if (loginModal.mode === 'create') {
+        await repo.profiles.createOfficerLogin({
+          fullName: loginForm.full_name,
+          phone: normalised,
+          password: loginForm.password,
+          role: loginForm.role,
+        })
+        toast.success(`Login created for ${normalised}. Hand them the password.`)
+      } else {
+        await repo.profiles.resetPassword(loginModal.officer.id, loginForm.password)
+        toast.success('Password changed. Hand the new password to the officer.')
+      }
+      setLoginModal({ open: false, mode: 'create', officer: null })
+      notifySecurityChanged()
+      reload()
+    } catch (err) {
+      setLoginErrors({ form: err.message })
+    } finally {
+      setLoginSaving(false)
+    }
+  }
+
   return (
     <div>
       <PageHeader
         title="Security & alerts"
-        description="Every committee sign-in needs an authenticator code. A sign-in from a new device, or a locked account, raises an alarm for the treasurer, president and secretary."
+        description="A sign-in from a new device, or a locked account, raises an alarm for the treasurer, president and secretary."
       />
 
       <div className="mb-5 grid grid-cols-2 gap-3 lg:grid-cols-4">
@@ -134,7 +202,7 @@ export default function Security() {
       {!isTreasurer ? (
         <div className="mb-5 rounded-2xl bg-brand-50 p-4 text-[0.9rem] leading-relaxed text-brand-800">
           You have read-only oversight. You can lock a suspicious account immediately, but only the
-          treasurer can unlock it.
+          treasurer can unlock it, add committee logins or reset passwords.
         </div>
       ) : null}
 
@@ -220,7 +288,18 @@ export default function Security() {
 
       <div className="grid gap-5 lg:grid-cols-2">
         <Card>
-          <CardHeader icon={KeyRound} title="Committee accounts" description="Treasurer, president and secretary." />
+          <CardHeader
+            icon={KeyRound}
+            title="Committee accounts"
+            description="Treasurer, president and secretary — each signs in with their own phone number."
+            action={
+              isTreasurer ? (
+                <Button size="sm" icon={UserPlus} onClick={openAddOfficer}>
+                  Add
+                </Button>
+              ) : null
+            }
+          />
           <div className="space-y-2.5">
             {officers.map((officer) => (
               <div key={officer.id} className="rounded-2xl border border-slate-100 p-4">
@@ -236,7 +315,7 @@ export default function Security() {
                       </p>
                       <p className="text-xs text-slate-500">
                         {ROLE_LABELS[officer.role] || officer.role}
-                        {officer.email ? ` · ${officer.email}` : officer.phone ? ` · ${officer.phone}` : ''}
+                        {officer.phone ? ` · ${officer.phone}` : officer.email ? ` · ${officer.email}` : ''}
                       </p>
                       <p className="mt-1 inline-flex items-center gap-1 text-xs text-slate-500">
                         <Clock3 className="h-3.5 w-3.5" />
@@ -252,6 +331,11 @@ export default function Security() {
                       {officer.security_locked ? <Lock className="h-3.5 w-3.5" /> : <ShieldCheck className="h-3.5 w-3.5" />}
                       {officer.security_locked ? 'Locked' : 'Protected'}
                     </Pill>
+                    {isTreasurer ? (
+                      <Button size="sm" variant="secondary" icon={KeyRound} onClick={() => openResetOfficer(officer)}>
+                        Reset password
+                      </Button>
+                    ) : null}
                     {!officer.security_locked ? (
                       <Button size="sm" variant="danger" icon={Lock} onClick={() => setLocking(officer)}>
                         Lock
@@ -338,6 +422,117 @@ export default function Security() {
           </Card>
         </div>
       </div>
+
+      <Modal
+        open={loginModal.open}
+        onClose={() => {
+          if (!loginSaving) setLoginModal({ open: false, mode: 'create', officer: null })
+        }}
+        title={loginModal.mode === 'create' ? 'Add a committee member' : 'Reset officer password'}
+        description={
+          loginModal.mode === 'create'
+            ? 'They sign in with this phone number and password, just like residents.'
+            : 'The old password stops working immediately.'
+        }
+        size="md"
+        footer={
+          <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+            <Button
+              variant="secondary"
+              onClick={() => setLoginModal({ open: false, mode: 'create', officer: null })}
+              disabled={loginSaving}
+            >
+              Cancel
+            </Button>
+            <Button type="submit" form="committee-login-form" icon={KeyRound} loading={loginSaving}>
+              {loginModal.mode === 'create' ? 'Create login' : 'Save new password'}
+            </Button>
+          </div>
+        }
+      >
+        <form id="committee-login-form" onSubmit={saveOfficerLogin} className="space-y-4" noValidate>
+          {loginErrors.form ? (
+            <div className="rounded-2xl border border-rose-100 bg-rose-50 px-4 py-3 text-sm text-rose-800">
+              {loginErrors.form}
+            </div>
+          ) : null}
+          {loginModal.mode === 'create' ? (
+            <>
+              <Input
+                label="Name"
+                name="officer_full_name"
+                placeholder="Full name"
+                value={loginForm.full_name}
+                onChange={(event) => {
+                  setLoginForm((current) => ({ ...current, full_name: event.target.value }))
+                  setLoginErrors((current) => ({ ...current, full_name: undefined }))
+                }}
+                error={loginErrors.full_name}
+              />
+              <div className="grid gap-4 sm:grid-cols-2">
+                <Input
+                  label="Sign-in phone"
+                  name="officer_phone"
+                  type="tel"
+                  placeholder="+91 98400 00000"
+                  value={loginForm.phone}
+                  onChange={(event) => {
+                    setLoginForm((current) => ({ ...current, phone: event.target.value }))
+                    setLoginErrors((current) => ({ ...current, phone: undefined }))
+                  }}
+                  error={loginErrors.phone}
+                />
+                <Select
+                  label="Role"
+                  name="officer_role"
+                  options={OFFICER_ROLE_OPTIONS}
+                  value={loginForm.role}
+                  onChange={(event) => {
+                    setLoginForm((current) => ({ ...current, role: event.target.value }))
+                    setLoginErrors((current) => ({ ...current, role: undefined }))
+                  }}
+                  error={loginErrors.role}
+                />
+              </div>
+            </>
+          ) : (
+            <div className="rounded-2xl bg-slate-50 px-4 py-3 text-sm text-slate-600">
+              {loginModal.officer?.full_name} · {ROLE_LABELS[loginModal.officer?.role] || loginModal.officer?.role}
+              {loginModal.officer?.phone ? ` · ${loginModal.officer.phone}` : ''}
+            </div>
+          )}
+          <div>
+            <div className="flex items-end gap-2">
+              <div className="min-w-0 flex-1">
+                <Input
+                  label="Password"
+                  name="officer_password"
+                  type="text"
+                  autoComplete="new-password"
+                  className="font-mono"
+                  value={loginForm.password}
+                  onChange={(event) => {
+                    setLoginForm((current) => ({ ...current, password: event.target.value }))
+                    setLoginErrors((current) => ({ ...current, password: undefined }))
+                  }}
+                  error={loginErrors.password}
+                />
+              </div>
+              <Button
+                type="button"
+                variant="secondary"
+                size="md"
+                onClick={() => setLoginForm((current) => ({ ...current, password: suggestPassword() }))}
+              >
+                New
+              </Button>
+            </div>
+            <p className="mt-1 text-sm leading-relaxed text-slate-500">
+              At least 8 characters. Write it down before saving — they will need it to open the app.
+            </p>
+          </div>
+        </form>
+      </Modal>
 
       <Modal
         open={Boolean(locking)}
