@@ -4,7 +4,7 @@ export const SUPABASE_ANON_KEY = (import.meta.env.VITE_SUPABASE_ANON_KEY || '').
 export const isSupabaseConfigured = Boolean(SUPABASE_URL && SUPABASE_ANON_KEY)
 
 export const APP_NAME = 'PAFOWA'
-export const APP_TAGLINE = 'Parvathi Apartments Foundation Committee Association'
+export const APP_TAGLINE = 'Pargavi Apartments Foundation Committee Association'
 export const APP_SHORT_TAGLINE = 'Apartment maintenance, made simple.'
 
 export const OFFICER_ROLES = ['treasurer', 'president', 'secretary']

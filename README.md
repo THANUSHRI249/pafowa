@@ -1,4 +1,4 @@
-# PAFOWA · Parvathi Apartments Foundation Committee Association
+# PAFOWA · Pargavi Apartments Foundation Committee Association
 
 A lightweight, mobile-first maintenance management app for an apartment association.
 Residents verify a one-time SMS code, pay monthly maintenance and download receipts.

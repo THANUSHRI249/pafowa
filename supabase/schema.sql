@@ -1,5 +1,5 @@
 -- =============================================================================
--- PAFOWA · Parvathi Apartments Foundation Committee Association
+-- PAFOWA · Pargavi Apartments Foundation Committee Association
 -- Supabase schema, row level security and secure RPCs.
 --
 -- Apply this file once in the Supabase SQL editor (or `supabase db push`).
